@@ -1,0 +1,593 @@
+= Beta-2 O10B quiescent-interruption recovery: independent broad review
+:toc:
+:toclevels: 2
+
+This record holds every independent broad-review pass over the Beta-2 slice
+O10B candidate for WorkItem `WI-WFC-BETA2-O10B-001` -- the per-class
+evaluation of a general reconcile-and-resume and the one class it ships.
+Later passes are added above earlier ones; earlier passes are kept unedited
+apart from the `(current)` marker, which moves to the newest pass.
+
+[[pass-h002]]
+== Pass H002 -- `RUN-6f8e6810…` (current)
+
+Status:: *CHANGES REQUIRED.* One blocking Finding, on documentation accuracy
+rather than on behaviour: the justification the candidate gives for its one
+genuinely new effect -- retiring the already-reconciled predecessor dispatch
+marker -- is false for the only Run shape that can reach the shipped class
+through the Front Door, and it is stated as fact in the slice's primary
+deliverable (the record's `Design` section), in a *normative* Operator Manual
+chapter, in a source comment and in a test docstring. The code itself is
+sound: I reproduced the predicate, the refusals, the preview and the journal
+accounting by execution, and found no safety, charging, authority or
+fail-closed defect. Everything else in the candidate meets its acceptance.
+Five non-blocking observations are in section 7.
+WorkItem:: `WI-WFC-BETA2-O10B-001`
+Run / Hop:: `RUN-6f8e68109aee4469a01f520db5ab1c20` / `H002` (`broad_review`,
+whole-candidate pass, independent reviewer, gate, blocking-only,
+`finding_authority: resolve`). No Finding is projected into this Hop; this
+pass opens one and disposes none. The labels inside the reviewed documents
+and in the predecessor Run's history are provenance, not current-Run Finding
+identifiers.
+Invocation:: `INV-be64a6077477457d8d8fcd6e3d4bf3cc`.
+Reviewed product:: the whole candidate at base HEAD
+`0a3c0ab2e27071f1da62300f24fbce435c0dd0bf`, the single implementation commit
+`0a3c0ab` over the Commission commit `e6b250f`: 26 leaves, 2555 insertions,
+161 deletions -- five source leaves (`reducer.py`, `persistence.py`,
+`frontdoor/lifecycle.py`, `frontdoor/audit.py`, `frontdoor/report.py`), six
+test leaves including two new modules, two shipped Agent Skill texts, eleven
+documentation leaves and one test fixture. All read; the two new test modules
+and the whole of the record's `Design` section read in full.
+`git status --short -uall` shows the same 22 pre-existing untracked worktree
+environment entries it showed at the start of this Hop and nothing else, so
+the candidate left no stray file and the index is untouched. I issued no
+mutating Git command.
+Coordinator-trusted evidence:: this Hop's projected `task-check` is the
+authoritative result for `ruff check .`, the full suite and the documentation
+render at this HEAD. Nothing below substitutes for it; nothing below
+contradicts it. My own runs are exploratory agent-side checks and are named
+as such, including the harness they ran under.
+Governing acceptance:: the Commission task (GOAL, EVALUATION FIRST, IF YOU
+SHIP A CLASS, SUCCESSOR AND SALVAGE NOTE, THE SCOPE QUESTION OF THE
+PREDECESSOR IS ANSWERED, PLAN CONTEXT, FRONT DOOR DOCS-SYNC, CHECKS, COMMIT
+AND INDEX DISCIPLINE, Acceptance, Withheld authority), the `o10` slice entry
+and the 2026-11-26 revision of
+`docs/backlog/beta2_operator_efficiency_plan.adoc`,
+`docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc` with its new `Design` section
+as the candidate's own design claim, and this repository's restated policy.
+
+=== 1. What I executed in this Hop
+
+`pytest`, `ruff` and `bwrap` are absent from this Hop's sandbox (no `.venv`;
+`python3 -m pytest` / `-m ruff`: `No module named …`; no network), so I could
+run no suite and no lint as the project runs them. Rather than reason only
+from the diff, I built a *minimal pytest shim* outside the checkout (in
+`$TMPDIR`, never in the repository) providing `fixture`, `mark.parametrize`,
+`raises` and `MonkeyPatch`, and executed the test modules whose fixtures that
+shim can satisfy. Results, stated with their limits:
+
+[cols="3,1,3",options="header"]
+|===
+|Module |Result |Note
+
+|`tests/unit/test_quiescent_interruption_reducer.py`
+|24 passed, 0 failed
+|The whole new pure-core suite, including the producer seam
+(`persistence.recover_uncertain_dispatch` -> the predicate).
+
+|`tests/unit/test_agent_skill_content.py`
+|21 passed, 0 failed
+|Every shipped-skill drift guard, including the classification guard and the
+`wfc`-command guard that the new `--preview` flag had to satisfy.
+
+|`tests/unit/test_report.py`
+|28 passed, 6 fixture-skipped
+|Includes both new next-action tests.
+
+|`tests/unit/test_audit_projection.py`
+|66 passed, 0 failed
+|Includes the new closed-enum `reconcile_reason` class.
+
+|`tests/unit/test_report_status_coverage.py`
+|35 passed, 3 skipped
+|The pinned per-status next-action table still holds.
+
+|`tests/unit/test_recovery_routing_reducer.py`
+|16 passed, 0 failed
+|The pre-existing durable-artifact predicate is unchanged in behaviour.
+
+|`tests/unit/test_budget_extension_reducer.py`
+|51 passed, 0 failed
+|O8 unchanged.
+
+|`tests/architecture/test_product_invariants.py`
+|5 passed, 0 failed
+|
+
+|`tests/unit/test_reducer.py`, `tests/unit/test_persistence.py`
+|inconclusive
+|36 failures, all `Run status prohibits invocation: awaiting_human`. These are
+*my harness*, not the candidate: my shim's `MonkeyPatch.undo` is a no-op and
+it performs no fixture teardown, so state leaks between tests. I re-ran one
+failing case in isolation
+(`test_schema4_publication_preserves_rows_is_idempotent_and_rejects_conflicts`)
+and it passes. I claim no result for these two modules.
+
+|`tests/unit/test_quiescent_interruption_lifecycle.py` (27 tests),
+`test_mechanical_recovery_lifecycle.py`, `test_budget_extension_lifecycle.py`,
+`test_preservation_lifecycle.py`
+|not run
+|They need a `git`-backed consumer repository *and* an installed `wfc`
+console script for `_resolve_engine_command()`; neither exists here. The
+Coordinator's `task-check` is the authoritative result for them. I compensated
+by executing the new boundary helpers directly (below) and by reading the
+whole module.
+|===
+
+*The new boundary helpers, executed directly* against a Run built by the real
+production producer: `_diagnose_recovery` returns
+`in_scope=True, quiescent_interruption, H001` with no refusal;
+`_recovery_preview_block` prints the documented block including `hops used 1
+of 5 (charged; never refunded)` and the "not yet checked" line; the same Run
+with one recorded anomaly returns the named refusal "the interrupted
+invocation left recorded repository anomalies: dirty tracked state" under the
+*interruption* class (not the scope gate); and `_journaled_recovery_events`
+over a journal holding `intent`, `rolled_back`, `intent` reports exactly one
+performed recovery, so a rolled-back attempt is not reported as one while its
+records remain.
+
+*Gates I did run in full.* Strict render of all thirteen changed `.adoc`
+leaves (`asciidoctor --safe-mode=safe -a assembled -o /dev/null
+--failure-level=WARN`) prints nothing. `scripts/wfc_doc_catalog.py generate`
+reports `621 records … unchanged` and `check` reports `83 unresolved links; 4
+Project Memory source_path misses` and `catalog current` -- exactly the stated
+baseline, with no additional entry from the new sections; its projection goes
+to the gitignored `build/wfc/document_catalog.jsonl`, so `git status` is
+unchanged by running it. For the lint gate I could not run `ruff`, so I
+approximated its configured rule set (`select = ["F"]`, `pyproject.toml:80`)
+with an AST pass over all eleven changed Python leaves: no unused import, no
+undefined name, no syntax error; `functools` remains used in
+`test_quickstart_commands.py` after the `_parse_resume_args` swap. I also
+confirmed `_parse_resume_args([])` and `(["--preview"])` parse as documented.
+
+*Every cited `path:line` re-read.* I checked all of them, because the
+candidate's own evidence sentence names a revision (see observation 1):
+`reducer.py:530` (the `mechanical_preemption` prefix gate), `:2310`
+("reconcile anomalies must be resolved before resume"), `:2417-2426`
+(`diagnose_budget_extension_state` requiring `awaiting_human_budget`),
+`:2123` (the `awaiting_human_budget` stop), `:76-82`
+(`RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES`), `:1902-1907` (any escalation,
+`operational` included, freezes a semantic stop);
+`persistence.py:150` ff. (`recover_uncertain_dispatch`), `:317-328` (the
+uncertain-dispatch marker correlation), `:375` ("Run Hop anchor lacks paired
+execution evidence", message and line exact);
+`model.py:1166-1167` (`record_hop` clears `human_question`), `:1122`
+(schema 2 unless the profile is 3);
+`slice4.py:411-419` (both `recover_uncertain` handlers), `:357-365` (the
+post-interruption delta and its anomalies), `:429` (the normal marker
+retirement), `:201-238` (the stale-marker branch -- see the Finding);
+`git_facts.py:665-703` and `:689-694` (anomaly classification), `:588-592`
+(`preflight_hop`'s dirty-tree refusal);
+`commissioning.py:358` (`"schema_version": 2`);
+`serialization.py:1406-1427` (a schema-2 Hop summary carries no anchor),
+`:1646` (`run_status_at_grant` pinned to `awaiting_human_budget`);
+`operator.py:325-332` (`prepare-successor --authority-decision`). All resolve
+exactly as described.
+
+*The interruption mechanism, checked from the provider end.* The Design's
+class-1/class-2 account depends on a provider timeout reaching
+`recover_uncertain_dispatch` rather than one of `slice4.py:412-417`'s
+marker-unlinking branches. It does:
+`claude_adapter.py:383-423` returns an `AgentExecutionOutcome` with
+`candidate=None` and `timed_out=True` on `subprocess.TimeoutExpired` and
+raises no `ClaudeCliError`, so the vertical's result validation raises and
+`slice4.py:411` charges the uncertain Hop. Friction entry 16's shape is
+therefore class 2 exactly as recorded.
+
+=== 2. The design, judged before the code
+
+The `Design` section is dated 2026-11-27, carries the WorkItem id, sits in the
+record the slice names (not in a review artifact), and does the three things
+the task asks of it: it enumerates the stop classes from the evidence, decides
+each by name with a trigger, and argues *why* the shipped class is safe rather
+than listing that it is. I judge the evaluation sound and the ship/no-ship
+split correct, and I reached that conclusion from the product:
+
+* *The shipped class is the one class whose proof the Coordinator can actually
+  own.* Every conjunct is a fact the Coordinator wrote itself -- the dispatch
+  marker it wrote before dispatching and the uncertain Hop it synthesized
+  afterwards (`attribution="coordinator"`) -- and not one is read from an agent
+  result. I looked for a conjunct that could be satisfied by provider-supplied
+  state and found none.
+* *The central argument is the right one, and it is not the one R2 needs.*
+  Because the Hop stays charged and the invocation is never replayed, the
+  predicate decides only that nothing useful is discarded and nothing
+  unreviewed is adopted; quiescence is *not* load-bearing for safety here, as
+  it would be for a discarded Hop. That distinction is what keeps this slice
+  from drifting into same-Hop retry, and the record states it as an argument
+  rather than as a reassurance.
+* *The decision to admit an open blocking Finding is right, and it is argued.*
+  It deviates from the sibling durable-artifact predicate deliberately and for
+  a stated reason (the record's own Case A; preserving Run-local Findings is
+  the entire value of a same-Run resume), the sibling's stricter conjunct is
+  left unchanged, and I verified in code that resume reads no Finding for any
+  decision and writes none -- `resume_after_reconcile` touches `status`,
+  `stop_reason` and `human_question` only. The predecessor draft's stricter
+  choice would have refused the record's motivating case; the candidate was
+  right not to inherit it.
+* *The refusals to ship are refusals of substance, not of contract.* Class 2
+  is refused because there is no sound disposition of the candidate -- adopting
+  it would give the trusted-commit boundary nothing to validate, discarding it
+  would destroy salvage material -- and the narrower "admit a historically
+  anomalous Run after a human restored the tree" form is identified, priced as
+  a change to a shared pure-core invariant, and deferred with a trigger precise
+  enough to act on. Class 6 is priced as a widening of O8's authority surface
+  for zero recorded occurrences. Neither reason is "a contract forbids it",
+  which the Beta rule would not have allowed.
+* *The benefit is split honestly.* Half one (a named diagnosis for every
+  post-dispatch interruption) serves both recorded occurrences; half two
+  (same-Run recovery) is admitted to be of unmeasured frequency, with the
+  observation that entry 14's own cause is now refused pre-dispatch by O3O2 and
+  that resume does not diagnose a cause at all. A candidate that shipped on
+  half two alone would have overclaimed.
+
+The four "honest limits" are genuine limits and I verified two of them
+mechanically: the checkpoint projection is unreachable for a schema-3 anchored
+Run through the Front Door (`commissioning.py:358` -> `model.py:1122`), and a
+schema-2 Hop summary does not persist an anchor at all
+(`serialization.py:1406-1427`) -- which is why the marker's anchor, not the
+Hop's, is the conjunct that refuses a published staged attempt in practice.
+The test module says so itself rather than implying the Hop conjunct is
+exercised end to end. That is the kind of honesty this review looks for.
+
+The predecessor's scope question was handled exactly as the task directed: the
+one stale `docs/semantic_model` sentence is *reported* in the `Design`
+section's limit 4 with the precise clause needed, not edited and not raised as
+an escalation. `docs/semantic_model` is untouched.
+
+=== 3. The blocking Finding
+
+*Invariant.* A normative statement the slice writes about current behaviour
+must be true of the behaviour the slice ships
+(`docs/developer_guide/ch03_engineering_conventions.adoc`: names, errors and
+nearby comments state current behaviour; the slice's own acceptance requires
+the record's evaluation to be evidence-backed, and the binding docs-sync
+clause requires editing what became inaccurate or misleading).
+
+*What the candidate states.* In four places, that the retirement of the
+already-reconciled predecessor dispatch marker is necessary for the Run to make
+progress at all:
+
+* `docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc`, "The one new effect, and its
+  mandatory ordering": "Without that, the continuation re-enters
+  `slice4.run_real_one_hop`'s stale-marker branch (`slice4.py:201-238`),
+  re-reconciles the identical already-charged uncertain Hop and *the Run can
+  never progress*".
+* `docs/operator_manual/ch06_recovery/01_outcomes.adoc` (Authority::
+  *normative*), the new `[[quiescent-interruption]]` section: "Without that the
+  engine would re-enter its stale-marker branch and re-reconcile the same
+  uncertain Hop *forever*."
+* `src/workflow_coordinator/frontdoor/lifecycle.py:1289-1296`, the comment on
+  the retirement, in the same words.
+* `tests/unit/test_quiescent_interruption_reducer.py:147-152`, whose docstring
+  claims the demonstrated reducer call is "the exact call
+  `slice4.run_real_one_hop`'s stale-marker branch makes on re-entry".
+
+*What the source does.* The cited branch is guarded by the Run's schema
+version: `slice4.py:201` reads
+`if run.schema_version == 3 and existing.role == "uncertain_dispatch":`. The
+Front Door renders every Consumer Request's profile at `schema_version: 2`
+(`commissioning.py:358`) and therefore creates schema-2 Runs
+(`model.py:1122`) -- which the candidate's own `Design` limit 2 states as the
+reason the checkpoint projection cannot refuse here. A continuation launched
+by `_continuation_engine_argv` (`frontdoor/lifecycle.py:766-793`,
+`--continue-existing`) loads that same schema-2 Run. So for *every* Run that
+can reach the shipped class through the Front Door the cited branch is
+unreachable; re-entry takes `slice4.py:239-246` instead, which reads the
+evidence file, writes a checkpoint, *unlinks the stale marker itself* and
+returns the Run unchanged at `READY`, after which `operator.py:1022`'s
+`while run.status is RunStatus.READY` loop dispatches the next Hop normally.
+The cost of omitting the retirement is therefore one wasted engine iteration,
+not a Run that can never progress.
+
+*Why this blocks.* The statement is not a side remark: it is the entire stated
+justification for the slice's one genuinely new effect, and for the rollback
+machinery that restores the marker's bytes. It is asserted in a chapter marked
+`Authority:: normative`, where an operator and a future slice will read it as
+current behaviour, and it is the kind of claim the Commission explicitly told
+this candidate's author to re-verify against the source. A later Run that
+trusts it will either over-build on a liveness requirement that does not exist
+for the shipped class, or fail to notice that the real motivation is a
+schema-3 shape that cannot currently occur.
+
+*What is not wrong.* The retirement itself is safe, correctly ordered and
+correctly rolled back, and I am not asking for its removal. It is
+information-preserving (the predicate proves no staged attempt refers to the
+marker), it enables no replay (the Hop id stays in `run.hops`), it avoids the
+wasted iteration, and it *is* required if a schema-3 Run ever continues
+through the Front Door. The refusal of an uncorrelated or unreadable marker is
+an independent and worthwhile safety gate and should stay.
+
+*Feasible correction, bounded.* State what is true in the same four places: the
+cited re-reconcile branch applies to a schema-3 Run; for the schema-2 Runs the
+Front Door creates, an un-retired marker costs one engine iteration that
+retires it itself (`slice4.py:239-246`) before the `READY` loop dispatches
+again; the retirement is kept deliberately, to avoid that iteration and to
+remain correct for a schema-3 continuation. No code change is needed, and the
+test's docstring needs one clause.
+
+=== 4. Acceptance, criterion by criterion
+
+[cols="2,1,4",options="header"]
+|===
+|Criterion |Verdict |How I verified it
+
+|The record carries a dated, evidence-backed per-class evaluation and decision
+with reasons and triggers
+|met, with the Finding
+|`#design` dated 2026-11-27 with the WorkItem id: six classes in one table
+with today's behaviour cited to source, per-class reasons and triggers, the
+benefit in two halves, four honest limits, rejected alternatives. I re-read
+every cited location (section 1). The one false mechanical claim is the
+Finding in section 3; it does not touch any per-class decision.
+
+|Mechanically provable from the Coordinator's own observation
+|met
+|Every conjunct of
+`diagnose_quiescent_interruption_recovery_eligibility` reads only the
+persisted Run; the Hop it reasons about is Coordinator-synthesized
+(`persistence.py:172-195`, `attribution="coordinator"`); the live facts are
+re-observed at the boundary and the marker correlation is derived from the
+Coordinator's own two records. Executed, section 1.
+
+|Conservatively charged
+|met
+|`resume_after_reconcile` writes `status`, `stop_reason` and `human_question`
+only -- `hop_used` and `hops` are untouched
+(`reducer.py:2315-2320`), confirmed by executing
+`test_admitted_mid_run_interruption_keeps_the_charge_and_resumes_purely`
+(`hop_used == 3` before and after). The recovery charges nothing for itself
+and the interrupted Hop is never refunded.
+
+|Explicitly human-triggered; no replay, no hidden retry
+|met
+|Reachable only from `cmd_resume` -> `resume_lifecycle`
+(`lifecycle.py:1969-1988`); `status_lifecycle` performs no recovery; there is
+no watchdog, timer or retry allowance anywhere in the diff. The interrupted
+invocation's result is never read, and the next dispatch takes a fresh
+invocation identity at the following sequence.
+
+|Previewable
+|met
+|`wfc resume --preview` returns before `_advance` can take the ownership lock,
+takes no lock, writes no Run, checkpoint, marker or journal record and
+launches nothing; `_evaluate` is read-only; `cmd_resume` maps the preview
+classification to exit `0` explicitly and it is deliberately not an
+`EXIT_CODES` entry. I executed the block itself.
+
+|Fail-closed for every other class
+|met
+|The scope gate (`(None, None)`) returns the unchanged no-op for every Run
+that is not `reconcile_required` with `reconcile_reason: interruption`;
+in-scope failures refuse by name and mutate nothing. Executed for the
+anomaly conjunct, the `prerequisite_return` reconcile and a resumed Run, and
+read for the rest. The two predicates are mutually exclusive by construction
+(`mechanical_preemption:` prefix versus the `interruption` reason), and the
+pre-existing predicate's own conjuncts -- including its open-blocking-Finding
+one -- are byte-unchanged.
+
+|Composes with budget extensions
+|met
+|`run.hop_used >= run.hop_limit` refuses before any mutation, so an
+interruption that spent the last Hop keeps its honest stop; the resume reads
+the Run's own `hop_limit`, so a recorded extension's raised ceiling applies;
+`wfc extend-budget` is untouched and its 51 reducer tests pass. The two
+end-to-end composition tests exist and are the Coordinator's to run.
+
+|Visible in status/report/audit
+|met
+|`_print_recovery_events` is called from `_print_result`, so every surface
+that prints a `LifecycleResult` prints the `RECOVERY <n>:` blocks;
+`_journaled_recovery_events` excludes a rolled-back attempt (executed);
+`audit.json` carries `reconcile_reason` as a closed enum with default-deny
+(66 projection tests pass, including the provider-prose canary projecting as
+`null`); `wfc report` names the path that exists for this class only (28
+report tests and the 35 pinned-table tests pass).
+
+|Fully tested including every refusal
+|met
+|Two new modules, 328 lines of pure-core tests (24, all executed and passing,
+including the producer seam and the idempotent marker re-entry) and 668 lines
+of lifecycle tests (27, structurally covering each conjunct violated one at a
+time, the preview, the launch-failure rollback, the visibility surfaces and
+the unchanged behaviour of the `prerequisite_return` reconcile and of an
+ordinary semantic `awaiting_human`). The lifecycle module needs an installed
+`wfc` and is the Coordinator's to run.
+
+|Docs-sync done
+|met, with the Finding
+|Operator Manual chapters 2, 3, 6, 7, 8, 9, 10 (including the correction of
+the stale "Same-Run resume is a library capability" paragraph in the normative
+recovery chapter), the technical model's runtime view, the shipped
+`SKILL.md` and `references/stops-and-evidence.md` (replaced, not appended;
+the file is at its pinned 200-line cap and the drift guards pass), the
+operator-guidance record's resume-scope statements retired by a dated note,
+the plan's O10 section, the `_open.adoc` card and the continuation-economy
+record. The one normative sentence that is wrong is the Finding.
+
+|No existing test weakened, skipped or deleted
+|met
+|No test leaf is deleted and no assertion is removed. The three modified
+modules are additive except
+`test_quickstart_commands.py`'s `_parse_simple_args` -> `_parse_resume_args`
+swap, which is required by the new flag and strictly strengthens the CLI
+drift guard. `tests/fixtures/bp4/fake_engine.py` only gains a new mode.
+
+|Strict render silent; doc catalog no worse; no stray file
+|met
+|Section 1: thirteen silent renders, `83 unresolved links; 4 Project Memory
+source_path misses`, `catalog current`, generated output in gitignored
+`build/`, `git status --short -uall` identical to the start of this Hop.
+
+|`ruff check .` clean; the full evidence command passes
+|Coordinator
+|`ruff`, `pytest` and `bwrap` are unavailable here. My AST approximation of
+the configured `F` rule set over all eleven changed Python leaves is clean
+(section 1). The Coordinator's `task-check` is the authoritative result.
+
+|CommitIntent array has one plain path per element
+|met
+|The commit carries 26 plain repository-relative leaves, matching
+`git diff --name-only e6b250f..0a3c0ab` exactly; the subject carries
+`WI-WFC-BETA2-O10B-001` and `H001`.
+|===
+
+=== 5. Simplicity and maintainability
+
+The candidate chose the small complete class over a framework, and I agree
+with the choice and with its stated reason: two predicates of the same shape
+dispatched in one place (`_diagnose_recovery`) carry less machinery than a
+registry would, and a third class is a third function and one more branch. I
+checked the three places where this slice could have accreted and did not:
+
+* *No new CLI surface.* A flag on the command that already owns the operator
+  decision, as O8 decided for `wfc extend-budget --preview`. A `wfc recover`
+  would have split one decision across two surfaces with its own refusal
+  vocabulary.
+* *No new state.* The predicate is a pure total function of the persisted Run;
+  nothing is added to `Run`, the checkpoint or the journal schema beyond
+  additive record fields. `reconcile_reason`/`reconcile_anchor` are
+  deliberately not cleared, and I verified the safety of that: no admission,
+  dispatch or reduction path reads either field (only persistence, audit,
+  report and the predicate's own scope gate do), and the scope gate is the
+  Run's *status*, so stale provenance can never re-admit a resumed Run.
+* *No duplicated truth across the producer/consumer seam.* The six recorded
+  shape constants are named once in `reducer.py` and imported by
+  `persistence.py`, and the new pure-core suite drives the *real* producer into
+  the predicate rather than a hand-built Run -- which is the test on both sides
+  of the seam that this repository's conventions ask for, and the single most
+  valuable thing in the test diff.
+
+The one place where the shipped mechanism exceeds its stated need is the
+marker retirement and its rollback, which is the Finding -- and I am asking
+for the claim to be corrected, not for the mechanism to be removed, because
+the mechanism is cheap, safe and correct for a schema-3 continuation.
+
+=== 6. What I tried to break
+
+* *Can a Run reach the predicate's admitting shape without having been
+  interrupted?* No. `require_reconcile(reason="interruption")` has exactly one
+  production call site (`persistence.py:202-204`, reached only from
+  `slice4.py`'s three post-marker paths); `reducer.py:675` passes
+  `mechanical_recoverable` and `lifecycle.py:1236` passes the same; no
+  production caller passes `prerequisite_return`. Grep over `src/` is
+  exhaustive.
+* *Can a question or a semantic stop be stepped over?* No. `record_hop` clears
+  `human_question` (`model.py:1167`) before `require_reconcile` writes its
+  boilerplate, and the idempotent re-entry branch (`persistence.py:201`) calls
+  no `record_hop` and so preserves it -- I executed both. Any other value, and
+  any non-null `semantic_stop`, refuses by name.
+* *Can an unreviewed candidate be adopted?* No. `actual_commits` empty *and*
+  `base_head == end_head` *and* `end_head == current_head == reconcile_anchor`
+  means nothing entered history and HEAD has not moved since the charge; the
+  anomaly conjunct excludes a dirty tree by construction; and the boundary
+  re-observes a clean worktree at the exact recorded HEAD before any mutation.
+  Three independent gates.
+* *Can the recovery loop?* No. Each resume is one human action charging
+  nothing; each further interruption charges one more Hop; the budget bounds
+  the count and an exhausted budget refuses by name. No new counter, which is
+  the right answer.
+* *Does the launch-failure rollback leave a half-recovered checkout?* Not in
+  the code: the Run snapshot, the checkpoint *and* the marker bytes are
+  restored, the rollback is journaled, the lock is released and the error
+  re-raised. Note that every pre-mutation check -- including the new marker
+  correlation and the engine resolution -- runs before the lock is taken, so
+  the pre-mutation ordering the earlier `F004` correction established is
+  preserved, not weakened. The one crash window the candidate admits (killed
+  between `mechanical_recovery_resumed` and the continuation's own `classified`
+  record) is pre-existing, shared with the sibling class, and honestly recorded.
+* *Does the new `wfc report` line overclaim?* No. It fires for every
+  `interruption` reconcile, including class 2, but says "run
+  `wfc resume --preview` to see whether the interruption is provably quiescent,
+  then `wfc resume`, which continues this same Run *or refuses with a named
+  reason*". Every other reconcile reason, and a legacy archive with none
+  recorded, keeps the generic fail-closed line -- tested, and I executed the
+  tests.
+
+=== 7. Non-blocking observations
+
+. *The `Design` section names the wrong revision for its own citations.* It
+  states that its mechanical claims cite "this repository's own source at the
+  Commission baseline `e6b250f`". They do not: `reducer.py:530`, `:2310`,
+  `:2417-2426`, `:2123` and `persistence.py:150`, `:375` resolve exactly at the
+  shipped HEAD `0a3c0ab` and are off by between 20 and 140 lines at `e6b250f`
+  (at `e6b250f`, `reducer.py:2310` is an `extend-budget` refusal string and
+  `persistence.py:375` carries a different message). The citations are correct
+  and *more* useful anchored to the shipped state; only the sentence naming the
+  anchor is wrong. One clause.
+. *The record's 2026-11-26 "Pointer" section still reads in the present tense.*
+  It says `resume_after_reconcile` is wired "only for the recoverable
+  durable-artifact anomaly class … every other stop falls through unchanged",
+  with `frontdoor/lifecycle.py:919`, `:844-931` and `reducer.py:463-500` --
+  now `:1239`, `:1171-1350` and `:506`. The section is dated in its own
+  heading and anchored to HEAD `78bd7a7`, the record's header and `Next action`
+  both point forward to the `Design` section, and the candidate applied this
+  repository's dated-layering convention consistently elsewhere
+  (`_open.adoc`, the plan, the guidance record all keep the old statement and
+  append a dated correction), so this reads coherently in date order. A
+  one-line "superseded by the `Design` section above" in that section would
+  remove the last ambiguity whenever it is next touched.
+. *One newly reachable refusal now skips a pending candidate preservation.*
+  Before this slice, `wfc resume` on a `reconcile_required`/`interruption` Run
+  fell through to `_advance` and then ran
+  `preservation.run_pending_preservation` and `postrun.run_pending_postrun`.
+  Now such a Run that fails a conjunct -- class 2, the uncommitted-candidate
+  case -- returns `refused_not_recoverable` from `resume_lifecycle:1984-1985`
+  before those steps. The early return is pre-existing
+  (`WI-WFC-RECOVERY-ROUTING-001`) and in the normal flow `wfc run` already
+  completed preservation, so this bites only in the narrow window where the
+  controller died between the `classified` record and preservation -- and there
+  `wfc resume` is the only command that completes them, so the automated
+  candidate capture becomes unreachable for exactly the class that has a
+  candidate. No data is lost (the candidate is still in the worktree and
+  `reconcile_required` remains a preservation trigger,
+  `preservation.py:30-32`), no existing test covers that combination, and the
+  trade-off was already accepted for the sibling class -- which is why this is
+  an observation. It is worth a sentence in the record's limits, or a narrow
+  change that lets a refusal still run the pending capture.
+. *The shipped skill reference dropped one still-true condition.* The old
+  `reconcile_required` bullet said the durable-artifact class requires "no
+  semantic stop, open question or open blocking Finding"; the rewritten text
+  names the two classes without the Finding condition, which remains true in
+  code for that class. The Operator Manual still carries it and the file is at
+  its pinned 200-line cap, so the omission is defensible in a distilling
+  reference; the asymmetry between the two classes is the one detail an agent
+  reading only this file would now miss.
+. *The preview prints "would then do" even when the live facts it just printed
+  contradict it.* With the pure predicate admitting but a moved HEAD or a dirty
+  tree, the block shouts `(DIFFERS from the Run's end HEAD)` and
+  `NOT clean with resolved submodules` and then still prints the "would then
+  do" line; the returned message's qualifier ("once every live fact still
+  holds") is what keeps it honest. Reproduced by execution. Deriving the verdict
+  line from the two facts it already observed would be strictly clearer.
+
+=== 8. Verdict
+
+*CHANGES REQUIRED*, route `correction`. One blocking Finding, opened in this
+pass (section 3): the stated necessity of the marker retirement is false for
+the only Run shape that can reach the shipped class through the Front Door,
+and it is asserted in the slice's primary deliverable, in a normative Operator
+Manual chapter, in a source comment and in a test docstring. The correction is
+bounded and touches no code.
+
+Everything else in this candidate is accepted on the evidence above. The
+evaluation is the per-class, evidence-backed, trigger-carrying document the
+slice asked for, and its decisions -- one class in, four out by name, one
+already answered by O8, one deferred with a trigger -- are the right ones. The
+shipped class is conservatively charged, explicitly triggered, mechanically
+proven from the Coordinator's own records, previewable without any effect,
+fail-closed for every other stop, composed with O8 in both directions and
+visible on status, report and audit; the independent reviewer's sole Finding
+authority, the trusted-commit boundary and the one-Run-per-checkout lifecycle
+are untouched. Independent acceptance and product closure remain the
+maintainer's to record.
