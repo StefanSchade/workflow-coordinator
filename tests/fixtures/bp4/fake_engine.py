@@ -158,7 +158,10 @@ def main() -> int:
     work_item_id = "WI-FAKE"
     profile_id = "fake-profile"
     profile_revision = "1"
-    if mode in ("mechanical_reconcile_required", "mechanical_awaiting_human", "budget_exhausted"):
+    if mode in (
+        "mechanical_reconcile_required", "mechanical_awaiting_human", "budget_exhausted",
+        "interrupted_reconcile_required",
+    ):
         # B, WI-WFC-RECOVERY-ROUTING-001: a mechanical-recovery continuation
         # re-admits through the real ``operator.py`` pipeline, which requires
         # the Run's own ``profile_id``/``profile_revision``/``work_item_id``
@@ -211,6 +214,16 @@ def main() -> int:
         # terminal awaiting_human" (B(ii), the incident shape) cases.
         "mechanical_reconcile_required": RunStatus.RECONCILE_REQUIRED,
         "mechanical_awaiting_human": RunStatus.AWAITING_HUMAN,
+        # O10B, WI-WFC-BETA2-O10B-001: the honest *post-dispatch
+        # interruption* shape, written exactly as
+        # ``persistence.recover_uncertain_dispatch`` ->
+        # ``reducer.require_reconcile(reason="interruption")`` writes it: one
+        # charged ``uncertain_dispatch`` Hop with no commit and no anchor,
+        # the ``interruption`` reconcile reason and its boilerplate question,
+        # and the predecessor dispatch marker still in place.
+        # ``WFC_FAKE_ENGINE_INTERRUPTION_*`` variables let a test violate one
+        # element at a time.
+        "interrupted_reconcile_required": RunStatus.RECONCILE_REQUIRED,
         # O8, WI-WFC-BETA2-O8-001: the honest *budget-exhausted* shape --
         # every authorized Hop actually charged and recorded, and the
         # reducer's own ``autonomous_hop_budget_exhausted`` stop reason. The
@@ -259,6 +272,44 @@ def main() -> int:
             hop_used=1,
             stop_reason=mechanical_stop_reason,
         )
+    elif mode == "interrupted_reconcile_required":
+        hop_id = os.environ.get("WFC_FAKE_ENGINE_INTERRUPTION_HOP_ID", "H001")
+        commits = tuple(
+            filter(None, os.environ.get("WFC_FAKE_ENGINE_INTERRUPTION_COMMITS", "").split(","))
+        )
+        anchor = os.environ.get("WFC_FAKE_ENGINE_INTERRUPTION_ANCHOR") or None
+        run = replace(
+            run,
+            hops=(HopSummary(
+                hop_id=hop_id, sequence=1, role=os.environ.get(
+                    "WFC_FAKE_ENGINE_INTERRUPTION_ROLE", "uncertain_dispatch",
+                ),
+                outcome="uncertain", base_head=args.expected_head,
+                end_head=args.expected_head, actual_commits=commits,
+                finding_delta_ids=(), evidence_refs=(), applied_route=None,
+                stop_reason="interrupted_after_dispatch_marker",
+                summary="Invocation may have been accepted; charged without replay.",
+                attribution="coordinator", pre_route_anchor_sha256=anchor,
+            ),),
+            hop_used=1,
+            reconcile_reason=os.environ.get(
+                "WFC_FAKE_ENGINE_INTERRUPTION_RECONCILE_REASON", "interruption",
+            ),
+            reconcile_anchor=args.expected_head,
+            stop_reason="reconcile_requires_explicit_resume",
+            human_question="Validate current reality and explicitly authorize resume.",
+            anomalies=tuple(
+                filter(None, os.environ.get("WFC_FAKE_ENGINE_INTERRUPTION_ANOMALIES", "").split(","))
+            ),
+        )
+        marker_hop_id = os.environ.get("WFC_FAKE_ENGINE_INTERRUPTION_MARKER_HOP_ID", hop_id)
+        if os.environ.get("WFC_FAKE_ENGINE_INTERRUPTION_NO_MARKER") != "1":
+            write_dispatch_marker(run_root / "dispatch.json", DispatchMarker(
+                schema_version=1, run_id=run.run_id, hop_id=marker_hop_id, sequence=1,
+                invocation_id="INV-fake-interrupted", base_head=args.expected_head,
+                budget_reserved=1, pre_route_anchor_sha256=anchor,
+            ))
+
     run = replace(run, status=terminal_status)
     _leave_dirty_worktree_content(repository)
     write_run_snapshot(run_root / "run.json", run)

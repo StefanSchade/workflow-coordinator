@@ -4,7 +4,7 @@ ifndef::assembled[]
 
 Maturity::  stable
 Authority:: informative
-Updated::   2026-11-20
+Updated::   2026-11-27
 Owns::      Current product Front Door launch/status mechanics (`wfc run`/`resume`/`status`) and interpretation of terminal states; governing inputs, code and the normative preparation contract retain authority.
 endif::[]
 
@@ -14,7 +14,7 @@ endif::[]
 [source,shell]
 ----
 wfc run --request path/to/request.yaml --yes
-wfc resume
+wfc resume [--preview]
 ----
 
 `wfc run` authorizes and launches a lifecycle against the canonical checkout
@@ -29,15 +29,22 @@ write-ahead. `wfc resume` continues an already-authorized checkout purely
 from journal and filesystem facts -- it never re-prompts and never
 recommits; use it after an interrupted controller, not to start a new
 lifecycle. It never resumes the engine's own Run/Hop/session for any other
-classification, with one narrow, regular exception: a `reconcile_required`
-or `awaiting_human` Run whose own recorded facts satisfy the mechanical-
-recovery predicate -- see the normative
-link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#mechanical-recovery[mechanical recovery section]
-of the recovery chapter.
-There, `wfc resume` re-verifies that predicate against the live Run and
+classification, with two narrow, regular exceptions: a `reconcile_required`
+or `awaiting_human` Run whose own recorded facts satisfy the
+link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#mechanical-recovery[mechanical-recovery
+predicate], and a `reconcile_required` Run whose facts satisfy the
+link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#quiescent-interruption[quiescent-interruption
+predicate] -- both normative in the recovery chapter.
+There, `wfc resume` re-verifies the predicate against the live Run and
 checkout, and only on success moves the identical Run back to `READY` and
 continues its Hop loop; every predicate failure refuses by name
-(`refused_not_recoverable`) and changes nothing.
+(`refused_not_recoverable`) and changes nothing. `wfc resume --preview`
+reports which class applies, what was proven or which element would refuse,
+and what the resume would then do, and is strictly read-only: it takes no
+ownership lock, writes no Run, checkpoint, marker or journal record, launches
+nothing, and always exits `0`. A recovery actually performed on this checkout
+is printed as a `RECOVERY <n>:` block by `wfc run`, `wfc resume` and
+`wfc status`.
 
 For WFC self-development tests using the offline profile, select the verified
 bundle explicitly in this launch process as well as in preparation; see the
@@ -67,10 +74,13 @@ long time before returning, and print `CLASSIFICATION: <name>` followed by
 `STATE ROOT:` and `CHECKOUT STATE ROOT:`. The process exit code encodes the
 classification (`0` for `completed`, `10` for `awaiting_human`, and so on,
 through `refused_*`/`inconsistent`/`uncertain_launch` codes for mechanical
-refusals, including `refused_not_recoverable` -- the regular, authorized
-`wfc resume` mechanical-recovery predicate declined, naming which element
+refusals, including `refused_not_recoverable` -- one of the two regular,
+authorized `wfc resume` recovery predicates declined, naming which element
 failed; see the recovery chapter's
-link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#mechanical-recovery[mechanical recovery section]).
+link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#mechanical-recovery[mechanical recovery]
+and
+link:{operator-docs}/operator_manual/ch06_recovery/01_outcomes.adoc#quiescent-interruption[quiescent-interruption]
+sections).
 *A non-zero exit code does not by itself mean provider or engine
 failure* -- `awaiting_human` and other legitimate terminal states produce one
 too (see terminal states below). Always inspect the printed classification
@@ -138,9 +148,11 @@ failure, or failed review. It means the current Run's authority/mechanics
 cannot legally continue -- the trusted reducer correctly refused rather than
 fabricate or assume authority it does not have.
 
-`wfc status` reports only the lifecycle classification and run status shown
-above; `stop_reason`, `human_question_present`, `hops_used`/`hop_limit`,
-`anomaly_count` and the rest of the sanitized Run facts are projected
+`wfc status` reports only the lifecycle classification, the run status shown
+above and any recorded budget extension or performed recovery of this
+checkout; `stop_reason`, `human_question_present`, `hops_used`/`hop_limit`,
+`reconcile_reason`, `anomaly_count` and the rest of the sanitized Run facts
+are projected
 separately, after archive, via `wfc audit <attempt-dir>` (or automatically by
 the BP6c postrun step) and rendered by `wfc report <source>`. When a Run
 stops `awaiting_human`, inspect in order: the reported `stop_reason`; whether

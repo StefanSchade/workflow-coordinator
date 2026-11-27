@@ -300,6 +300,37 @@ class TestStoppedRunsProjectTruthfully:
         assert audit["run"]["human_question_present"] is False
 
 
+class TestReconcileReasonIsProjectedDefaultDeny:
+    """O10B: the reconcile reason is projected because a report cannot
+    otherwise tell the recoverable quiescent interruption from any other
+    ``reconcile_required`` Run -- but only from the closed set the reducer
+    can write, so the field can never carry free text or a path."""
+
+    @pytest.mark.parametrize(
+        "reason", ["interruption", "prerequisite_return", "mechanical_recoverable"],
+    )
+    def test_each_admitted_reason_projects_exactly(self, reason):
+        assert au._reconcile_reason_entry({"reconcile_reason": reason}) == reason
+
+    @pytest.mark.parametrize("recorded", [
+        {},
+        {"reconcile_reason": None},
+        {"reconcile_reason": "CANARY-PROVIDER-DIAGNOSTIC-prose-should-never-leak"},
+        {"reconcile_reason": "/home/someone/secret"},
+        {"reconcile_reason": 7},
+    ])
+    def test_anything_outside_the_closed_set_projects_as_null(self, recorded):
+        assert au._reconcile_reason_entry(recorded) is None
+
+    def test_an_archived_reconcile_required_run_never_leaks_its_recorded_prose(self, tmp_path):
+        """The fixture deliberately writes the provider-prose canary into
+        ``reconcile_reason`` for a ``reconcile_required`` Run."""
+
+        audit = _project(tmp_path, status="reconcile_required", stop_reason="convergence_conflict")
+        assert audit["run"]["reconcile_reason"] is None
+        assert ab.PROVIDER_PROSE_CANARY not in json.dumps(audit)
+
+
 class TestLifecycleFacts:
     def test_absent_lifecycle_is_null_with_a_named_limit(self, tmp_path):
         attempt_dir = ab.build_attempt(tmp_path)

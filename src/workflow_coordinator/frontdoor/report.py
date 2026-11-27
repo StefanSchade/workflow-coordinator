@@ -55,6 +55,21 @@ _NO_RECOVERY_NEXT_ACTION = (
     "and no automated recovery exists for it"
 )
 
+# O10B: a `reconcile_required` Run whose reconcile reason is `interruption`
+# -- the invocation was interrupted after its dispatch marker existed, so
+# its Hop is already charged and is never replayed. The fixed table's
+# generic "a human must reconcile the Run's conflicting state before
+# resuming" is wrong for this shape in both halves: there may be no
+# conflicting state at all, and `wfc resume` does now recover it where its
+# own predicate holds. `--preview` is named first because it is the
+# read-only way to learn which of the two it is.
+_INTERRUPTION_RECOVERY_NEXT_ACTION = (
+    "a human must validate current reality after an interrupted invocation, whose "
+    "Hop is already charged and is never replayed; run `wfc resume --preview` to "
+    "see whether the interruption is provably quiescent, then `wfc resume`, which "
+    "continues this same Run or refuses with a named reason"
+)
+
 # Fixed table: the one line naming the next human choice, keyed by the
 # reported status. Anything not in this table (together with "completed",
 # which needs no further action) is reported as "unknown", never as success.
@@ -193,6 +208,11 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
 
     no_question = status == "awaiting_human" and run.get("human_question_present") is False
 
+    # O10B: the audit's closed-enum projection of the Run's reconcile reason.
+    # Absent from every archive built before that slice, which therefore
+    # keeps the fixed table's generic `reconcile_required` line unchanged.
+    interruption_reconcile = run.get("reconcile_reason") == "interruption"
+
     next_action = None
     if not success:
         if no_question and mechanical_stop:
@@ -209,6 +229,12 @@ def build_report(audit: Mapping[str, Any], *, archive_ref: str | None = None) ->
             # conflicting state the recovery predicate guarantees is absent,
             # and withholds the one path that actually exists for it.
             next_action = _MECHANICAL_RECOVERY_NEXT_ACTION
+        elif status == "reconcile_required" and interruption_reconcile:
+            # O10B: the one other `reconcile_required` shape with a real
+            # recovery path. Kept narrow on purpose: every other reconcile
+            # reason, and a legacy archive with none recorded, keeps the
+            # fixed table's generic line, which is fail-closed.
+            next_action = _INTERRUPTION_RECOVERY_NEXT_ACTION
         elif no_question:
             # No open human question is recorded, but the stop is NOT a
             # recoverable mechanical one (e.g. an open blocking Finding):

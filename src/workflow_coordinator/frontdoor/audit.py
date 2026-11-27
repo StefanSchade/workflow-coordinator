@@ -37,6 +37,13 @@ _RUN_KEYS = frozenset({
     "run_id", "work_item_id", "status", "stop_reason", "hops_used", "hop_limit",
     "baseline_head", "final_head", "worktree_clean", "human_question_present",
     "semantic_stop_present", "budget_extensions",
+    # O10B: one of the three closed reconcile reasons, or null. Without it a
+    # report cannot tell a proven-quiescent post-dispatch interruption --
+    # which `wfc resume` now recovers -- from any other `reconcile_required`
+    # Run, and would have to keep asserting a conflicting state the recovery
+    # predicate proves is absent. A closed enum, so it carries no path and
+    # no free text.
+    "reconcile_reason",
 })
 # O8: one recorded maintainer Hop-budget extension, projected *structurally*.
 # The authority statement's free text is deliberately absent and represented
@@ -206,9 +213,27 @@ def _build_run_section(run_doc: dict, summary_doc: dict | None, limits: list[str
         "human_question_present": run_doc.get("human_question") is not None,
         "semantic_stop_present": run_doc.get("semantic_stop") is not None,
         "budget_extensions": _budget_extension_entries(run_doc),
+        "reconcile_reason": _reconcile_reason_entry(run_doc),
     }
     _assert_keys(section, _RUN_KEYS, context="run section")
     return section
+
+
+# The exact set ``reducer.require_reconcile`` can write, and nothing else.
+_RECONCILE_REASONS = frozenset({"interruption", "prerequisite_return", "mechanical_recoverable"})
+
+
+def _reconcile_reason_entry(run_doc: dict) -> str | None:
+    """O10B: the Run's reconcile reason, admitted only from the closed set.
+
+    Default-deny like every other field of this projection: anything that is
+    not one of the three reasons the reducer can write -- including an absent
+    key and an unrecognised future value -- projects as ``null`` rather than
+    being copied through.
+    """
+
+    recorded = run_doc.get("reconcile_reason")
+    return recorded if recorded in _RECONCILE_REASONS else None
 
 
 def _budget_extension_entries(run_doc: dict) -> list:

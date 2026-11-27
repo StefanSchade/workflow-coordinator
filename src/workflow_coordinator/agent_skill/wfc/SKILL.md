@@ -120,8 +120,9 @@ merely because an earlier attempt failed.
    (Authorization item 8) without a further ask. On anything else, read
    `references/stops-and-evidence.md`: act on your own where it says this
    mandate already covers the next step (a corrected probe retried in a
-   fresh checkout, `wfc resume` where permitted, a successor Commission at
-   the same scope/program/Hop budget); bring to the human only a stop that
+   fresh checkout, `wfc resume --preview` and `wfc resume` where permitted, a
+   successor Commission at the same scope/program/Hop budget); bring to the
+   human only a stop that
    genuinely asks for a new authorization decision.
 
 ## Never

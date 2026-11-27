@@ -45,7 +45,7 @@ _PARSE_ARGS: dict[str, Callable[[list[str]], argparse.Namespace]] = {
     "prepare-checkout": PREPARE_CHECKOUT._parse_args,
     "request": EMIT_REQUEST._parse_args,
     "run": LIFECYCLE._parse_run_args,
-    "resume": functools.partial(LIFECYCLE._parse_simple_args, "wfc resume"),
+    "resume": LIFECYCLE._parse_resume_args,
     "status": functools.partial(LIFECYCLE._parse_simple_args, "wfc status"),
     "audit": AUDIT._parse_args,
     "report": REPORT._parse_args,

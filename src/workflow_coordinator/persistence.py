@@ -22,6 +22,11 @@ from .model import (
     TrustedQualificationIndex,
 )
 from .reducer import (
+    INTERRUPTION_RECONCILE_REASON,
+    UNCERTAIN_DISPATCH_ATTRIBUTION,
+    UNCERTAIN_DISPATCH_HOP_STOP_REASON,
+    UNCERTAIN_DISPATCH_OUTCOME,
+    UNCERTAIN_DISPATCH_ROLE,
     ReductionError,
     derive_convergence_facts,
     permitted_route_keys,
@@ -170,7 +175,7 @@ def recover_uncertain_dispatch(
                 hop_id=marker.hop_id,
                 sequence=marker.sequence,
                 phase=run.phase,
-                role="uncertain_dispatch",
+                role=UNCERTAIN_DISPATCH_ROLE,
                 context="fresh",
                 started_at="unknown",
                 ended_at=None,
@@ -178,13 +183,13 @@ def recover_uncertain_dispatch(
                 end_head=current_head,
                 actual_commits=actual_commits,
                 invocation_status="acceptance_not_disproved",
-                outcome="uncertain",
+                outcome=UNCERTAIN_DISPATCH_OUTCOME,
                 finding_delta_ids=(),
                 evidence_refs=(),
                 applied_route=None,
-                stop_reason="interrupted_after_dispatch_marker",
+                stop_reason=UNCERTAIN_DISPATCH_HOP_STOP_REASON,
                 summary="Invocation may have been accepted; charged without replay.",
-                attribution="coordinator",
+                attribution=UNCERTAIN_DISPATCH_ATTRIBUTION,
                 pre_route_anchor_sha256=marker.pre_route_anchor_sha256,
             ),
         )
@@ -194,7 +199,9 @@ def recover_uncertain_dispatch(
         if existing.pre_route_anchor_sha256 != marker.pre_route_anchor_sha256:
             raise ReductionError("dispatch marker anchor conflicts with charged Hop")
         charged = replace(run, current_head=current_head)
-    return require_reconcile(charged, reason="interruption", current_head=current_head)
+    return require_reconcile(
+        charged, reason=INTERRUPTION_RECONCILE_REASON, current_head=current_head,
+    )
 
 
 def execution_evidence_run_identity(run: Run) -> ExecutionEvidenceRunIdentity:
@@ -309,7 +316,7 @@ def trusted_qualification_index_for_run(
         hop = hops_by_id.get(attempt.hop_id)
         if hop is None or hop.sequence != attempt.hop_sequence:
             raise ReductionError("execution evidence row references an unknown Hop")
-        if hop.role == "uncertain_dispatch":
+        if hop.role == UNCERTAIN_DISPATCH_ROLE:
             if (
                 marker is None
                 or marker.run_id != run.run_id
@@ -340,7 +347,7 @@ def trusted_qualification_index_for_run(
         for hop in run.hops
         if (
             hop.pre_route_anchor_sha256 is not None
-            and hop.role != "uncertain_dispatch"
+            and hop.role != UNCERTAIN_DISPATCH_ROLE
             and hop.hop_id not in paired_hops
         )
     ]
@@ -361,7 +368,7 @@ def _qualification_index_for_inputs(
         hop
         for hop in run.hops
         if hop.pre_route_anchor_sha256 is not None
-        and hop.role != "uncertain_dispatch"
+        and hop.role != UNCERTAIN_DISPATCH_ROLE
     )
     if execution_evidence_json is None:
         if run.schema_version == 3 and anchored_hops:

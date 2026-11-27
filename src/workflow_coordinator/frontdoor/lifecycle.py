@@ -49,8 +49,14 @@ from ..git_facts import (
     repository_identity,
 )
 from ..implementation_identity import implementation_identity
-from ..model import Run, RunStatus
-from ..persistence import atomic_write_json, checkpoint_projection, write_run_snapshot
+from ..model import DispatchMarker, FindingState, Run, RunStatus
+from ..persistence import (
+    atomic_write_json,
+    checkpoint_projection,
+    load_dispatch_marker,
+    write_dispatch_marker,
+    write_run_snapshot,
+)
 from ..reducer import (
     BUDGET_EXTENSION_MAX_PER_CALL,
     ReductionError,
@@ -58,6 +64,7 @@ from ..reducer import (
     diagnose_budget_extension_amount,
     diagnose_budget_extension_state,
     diagnose_mechanical_recovery_eligibility,
+    diagnose_quiescent_interruption_recovery_eligibility,
     extend_hop_budget,
     refuse_degenerate_authority,
     require_reconcile,
@@ -169,6 +176,21 @@ EXIT_CODES: dict[str, int] = {
 # audit or a report. ``cmd_extend_budget`` maps it to exit 0 explicitly.
 BUDGET_EXTENSION_PREVIEW_CLASSIFICATION = "budget_extension_preview"
 
+# O10B, WI-WFC-BETA2-O10B-001: the outcome of ``wfc resume --preview``,
+# deliberately not an ``EXIT_CODES`` entry for exactly the reason the
+# budget-extension preview above is not one either: it writes nothing, takes
+# no lock, is never recorded in a ``classified`` journal record and can
+# therefore never appear in an audit or a report. ``cmd_resume`` maps it to
+# exit 0 explicitly.
+RECOVERY_PREVIEW_CLASSIFICATION = "recovery_preview"
+
+# O10B: the two same-Run recovery classes ``wfc resume`` admits, named so
+# that a journal record, a printed block and a refusal all say the same
+# word. Every stop outside both classes keeps refusing, or no-opping,
+# exactly as before -- see ``_diagnose_recovery``.
+RECOVERY_CLASS_DURABLE_ARTIFACT = "durable_artifact_anomaly"
+RECOVERY_CLASS_QUIESCENT_INTERRUPTION = "quiescent_interruption"
+
 # BP6c (additive; every value in EXIT_CODES above is frozen and unchanged):
 # the post-classification archive/audit/report step itself refused or
 # failed. This is never a ``LifecycleResult.classification`` value -- the
@@ -212,6 +234,12 @@ class LifecycleResult:
     # report-only ``wfc status`` surface. Empty for every checkout that was
     # never extended, so no existing construction of this dataclass changes.
     budget_extensions: tuple[Mapping[str, Any], ...] = ()
+    # O10B: every same-Run recovery actually performed on this checkout, read
+    # from the checkout's own append-only journal, for the report-only
+    # ``wfc status``/``wfc run``/``wfc resume`` surface. Empty for every
+    # checkout that was never recovered, so no existing construction of this
+    # dataclass changes.
+    recovery_events: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -844,6 +872,9 @@ def _evaluate(repository: Path, checkout_dir: Path, journal: Journal) -> Lifecyc
     # continuation. Read-only; a checkout that was never extended reports
     # an empty tuple, exactly as before.
     extensions = _journaled_budget_extensions(journal)
+    # O10B: every same-Run recovery performed on this checkout, for the same
+    # reason and on the same read-only terms as the extensions above.
+    recoveries = _journaled_recovery_events(journal)
 
     classified = journal.latest(("classified",))
     if classified is not None:
@@ -852,7 +883,7 @@ def _evaluate(repository: Path, checkout_dir: Path, journal: Journal) -> Lifecyc
             classification=data["classification"], message="lifecycle already classified (no-op)",
             run_id=data.get("run_id"), run_status=data.get("run_status"), end_head=data.get("end_head"),
             state_root=data.get("state_root"), checkout_state_root=data.get("checkout_state_root"),
-            budget_extensions=extensions,
+            budget_extensions=extensions, recovery_events=recoveries,
         )
 
     authorized = journal.latest(("authorized",))
@@ -895,7 +926,7 @@ def _evaluate(repository: Path, checkout_dir: Path, journal: Journal) -> Lifecyc
         classification=classification, message=f"classified: {classification}",
         run_id=run.run_id, run_status=run.status.value, end_head=run.current_head,
         state_root=str(engine_state_root), checkout_state_root=str(run_root),
-        budget_extensions=extensions,
+        budget_extensions=extensions, recovery_events=recoveries,
     )
 
 
@@ -919,6 +950,15 @@ def _record_classification_if_new(journal: Journal, result: LifecycleResult) -> 
 # anything, and a successful recovery only ever appends new journal records,
 # never rewrites or deletes one, and never touches the already-archived
 # attempt from a prior classification.
+#
+# O10B, WI-WFC-BETA2-O10B-001: the identical path now admits a *second*
+# recovery class, the proven-quiescent post-dispatch interruption, through
+# its own pure predicate and the same live-fact re-verification in the same
+# pre-mutation order. Every stop outside both classes keeps its behaviour
+# exactly: refusing by name where a class's own predicate is in play and one
+# element fails, and the unchanged "lifecycle already classified (no-op)"
+# otherwise. See ``FTR-WFC-ATOMIC-HOP-RECOVERY``'s Design section for the
+# per-class evaluation and the classes it deliberately leaves out.
 # --------------------------------------------------------------------------
 
 def _refused_recovery(run: Run, reason: str) -> LifecycleResult:
@@ -927,6 +967,96 @@ def _refused_recovery(run: Run, reason: str) -> LifecycleResult:
         message=f"mechanical recovery refused: {reason}",
         run_id=run.run_id, run_status=run.status.value, end_head=run.current_head,
     )
+
+
+def _journaled_recovery_events(journal: Journal) -> tuple[Mapping[str, Any], ...]:
+    """O10B: every same-Run recovery actually performed on this checkout.
+
+    Read-only, from the append-only journal, in the order they happened. A
+    recovery whose continuation launch failed and was rolled back is
+    excluded here (it changed nothing in the end), while its ``*_intent``
+    and ``*_rolled_back`` records stay in the journal as the attempt's own
+    auditable trace -- exactly the rule O8's budget-extension projection
+    uses, for the same reason.
+    """
+
+    performed: list[Mapping[str, Any]] = []
+    for record in journal.read_all():
+        if record.kind == "mechanical_recovery_intent":
+            performed.append(dict(record.data))
+        elif record.kind == "mechanical_recovery_rolled_back" and performed:
+            # Written under the same held ownership lock as the recovery it
+            # undoes, and nothing else can recover in between, so it always
+            # undoes exactly the latest attempt.
+            performed.pop()
+    return tuple(performed)
+
+
+@dataclass(frozen=True)
+class _RecoveryDiagnosis:
+    """The recovery decision for one persisted Run, before any live fact.
+
+    Exactly one of three shapes, which is what keeps every non-admitted stop
+    fail-closed: ``in_scope=False`` ("never a candidate for either
+    predicate", so the caller falls through to its own unchanged behaviour),
+    ``refusal`` set ("in scope, and this named element is violated"), or
+    ``recovery_class`` and ``proven`` set ("every element of that class's
+    predicate holds").
+    """
+
+    in_scope: bool
+    recovery_class: str | None = None
+    proven: str | None = None
+    refusal: str | None = None
+    # Only the durable-artifact class has an anomaly text; the interruption
+    # class deliberately has none rather than a fabricated one.
+    anomaly: str | None = None
+    # The charged uncertain Hop the interruption class proved quiescent.
+    interrupted_hop_id: str | None = None
+
+
+_NOT_IN_SCOPE = _RecoveryDiagnosis(in_scope=False)
+
+
+def _diagnose_recovery(run: Run) -> _RecoveryDiagnosis:
+    """Decide which same-Run recovery class, if any, this Run belongs to.
+
+    The two pure predicates are consulted in order and are mutually
+    exclusive by construction: the durable-artifact one requires a
+    ``mechanical_preemption:`` stop reason, the interruption one requires
+    ``reconcile_reason == "interruption"`` with its own
+    ``reconcile_requires_explicit_resume`` stop reason. A third class would
+    be a third pure predicate and one more branch here -- deliberately not a
+    registry (the Design section rejects a framework for two classes).
+    """
+
+    anomaly, refusal = diagnose_mechanical_recovery_eligibility(run)
+    if anomaly is not None:
+        return _RecoveryDiagnosis(
+            in_scope=True, recovery_class=RECOVERY_CLASS_DURABLE_ARTIFACT,
+            proven=f"recoverable durable-artifact anomaly: {anomaly}", anomaly=anomaly,
+        )
+    if refusal is not None:
+        return _RecoveryDiagnosis(
+            in_scope=True, recovery_class=RECOVERY_CLASS_DURABLE_ARTIFACT, refusal=refusal,
+        )
+
+    hop_id, refusal = diagnose_quiescent_interruption_recovery_eligibility(run)
+    if hop_id is not None:
+        return _RecoveryDiagnosis(
+            in_scope=True, recovery_class=RECOVERY_CLASS_QUIESCENT_INTERRUPTION,
+            proven=(
+                f"quiescent post-dispatch interruption at charged uncertain Hop {hop_id}: "
+                "no commit, no HEAD movement, no recorded repository anomaly, no staged "
+                "qualification attempt, no route and no Finding delta"
+            ),
+            interrupted_hop_id=hop_id,
+        )
+    if refusal is not None:
+        return _RecoveryDiagnosis(
+            in_scope=True, recovery_class=RECOVERY_CLASS_QUIESCENT_INTERRUPTION, refusal=refusal,
+        )
+    return _NOT_IN_SCOPE
 
 
 def _recovery_commission_identity_ok(repository: Path, checkout_dir: Path, authorized: JournalRecord) -> bool:
@@ -977,21 +1107,16 @@ def _do_continuation_launch(
     return record, process
 
 
-def _attempt_mechanical_recovery(
-    repository: Path, checkout_dir: Path, journal: Journal, classified: JournalRecord,
-) -> LifecycleResult | None:
-    """Return ``None`` when this checkout's cached classification was never
-    in scope for mechanical recovery at all (the caller then falls through
-    to the unchanged "lifecycle already classified (no-op)" behaviour for
-    every other classification, and for an "awaiting_human"/
-    "reconcile_required" Run whose ``stop_reason`` does not even carry the
-    ``mechanical_preemption:`` prefix). Otherwise always returns a
-    ``LifecycleResult``: a named refusal (no mutation at all) or a completed
-    continuation (new journal records only, Run moved to ``READY`` and the
-    engine re-driven to a further ``classified`` record)."""
+def _recovery_candidate_run(classified: JournalRecord) -> tuple[Path, Run] | None:
+    """The persisted Run a classified checkout might recover, or ``None``.
 
-    classification = classified.data.get("classification")
-    if classification not in ("reconcile_required", "awaiting_human"):
+    ``None`` is the "never in scope" answer for every classification outside
+    the two recovery classes' own statuses and for an absent or unreadable
+    Run record -- deliberately identical to the pre-O10B behaviour, which
+    fell through to the unchanged no-op for exactly these shapes.
+    """
+
+    if classified.data.get("classification") not in ("reconcile_required", "awaiting_human"):
         return None
     checkout_state_root_value = classified.data.get("checkout_state_root")
     if not checkout_state_root_value:
@@ -1000,15 +1125,74 @@ def _attempt_mechanical_recovery(
     if not run_path.is_file():
         return None
     try:
-        run = load_run(run_path)
+        return run_path, load_run(run_path)
     except Exception:
         return None
 
-    anomaly, refusal = diagnose_mechanical_recovery_eligibility(run)
-    if anomaly is None and refusal is None:
-        return None  # Scope gate: never a mechanical_preemption stop at all.
-    if anomaly is None:
-        return _refused_recovery(run, refusal)
+
+def _correlated_predecessor_marker(
+    run_root: Path, run: Run,
+) -> tuple[Path, DispatchMarker] | str | None:
+    """O10B: the already-reconciled predecessor dispatch marker, or a refusal.
+
+    Returns ``(path, marker)`` when a marker is present and correlates
+    *exactly* with the charged uncertain Hop the pure predicate proved
+    quiescent, ``None`` when no marker file exists at all (nothing to
+    retire; the recovery proceeds), or a refusal string. The correlation is
+    derived from the Coordinator's own two records -- the marker it wrote
+    before dispatching and the Hop it charged afterwards -- never from any
+    agent claim: an uncorrelated marker means this checkout's state is not
+    the state the predicate reasoned about, so it is refused rather than
+    silently retired.
+    """
+
+    marker_path = run_root / "dispatch.json"
+    if not marker_path.exists():
+        return None
+    try:
+        marker = load_dispatch_marker(marker_path)
+    except Exception as error:
+        return f"the predecessor dispatch marker is not readable: {error}"
+    hop = run.hops[-1]
+    if (
+        marker.run_id != run.run_id
+        or marker.hop_id != hop.hop_id
+        or marker.sequence != hop.sequence
+        or marker.base_head != hop.base_head
+        or marker.pre_route_anchor_sha256 is not None
+    ):
+        return (
+            "the predecessor dispatch marker does not correlate with the charged "
+            f"uncertain Hop {hop.hop_id}"
+        )
+    return marker_path, marker
+
+
+def _attempt_mechanical_recovery(
+    repository: Path, checkout_dir: Path, journal: Journal, classified: JournalRecord,
+) -> LifecycleResult | None:
+    """Return ``None`` when this checkout's cached classification was never
+    in scope for same-Run recovery at all (the caller then falls through
+    to the unchanged "lifecycle already classified (no-op)" behaviour for
+    every other classification, and for an "awaiting_human"/
+    "reconcile_required" Run that matches neither recovery class's own
+    predicate). Otherwise always returns a ``LifecycleResult``: a named
+    refusal (no mutation at all) or a completed continuation (new journal
+    records only, Run moved to ``READY`` and the engine re-driven to a
+    further ``classified`` record)."""
+
+    candidate = _recovery_candidate_run(classified)
+    if candidate is None:
+        return None
+    run_path, run = candidate
+    checkout_state_root_value = classified.data["checkout_state_root"]
+
+    diagnosis = _diagnose_recovery(run)
+    if not diagnosis.in_scope:
+        return None  # Scope gate: neither recovery class was ever in play.
+    if diagnosis.refusal is not None:
+        return _refused_recovery(run, diagnosis.refusal)
+    recovery_class = diagnosis.recovery_class
 
     authorized = journal.latest(("authorized",))
     prelaunch = journal.latest(("prelaunch_passed",))
@@ -1055,6 +1239,19 @@ def _attempt_mechanical_recovery(
         resumed = resume_after_reconcile(reconciled, profile, current_head=facts.head)
     except ReductionError as error:
         return _refused_recovery(run, f"recovery predicate re-verification failed: {error}")
+
+    # O10B: the interruption class is the only one with a predecessor
+    # dispatch marker still in place, and it must be retired below -- so its
+    # exact correlation with the charged uncertain Hop is established here,
+    # pre-mutation, like every other element. The durable-artifact class
+    # reaches its stop after the marker was already retired normally
+    # (`slice4.py:429`), so there is nothing to correlate or retire for it.
+    marker_to_retire: tuple[Path, DispatchMarker] | None = None
+    if recovery_class == RECOVERY_CLASS_QUIESCENT_INTERRUPTION:
+        correlated = _correlated_predecessor_marker(Path(checkout_state_root_value), run)
+        if isinstance(correlated, str):
+            return _refused_recovery(run, correlated)
+        marker_to_retire = correlated
     try:
         engine_argv0 = _resolve_engine_command()[0]
     except RuntimeError as error:
@@ -1068,11 +1265,41 @@ def _attempt_mechanical_recovery(
     try:
         journal.append("mechanical_recovery_intent", {
             "run_id": run.run_id, "checkout_state_root": checkout_state_root_value,
-            "anomaly": anomaly, "from_status": run.status.value,
+            # Unchanged for the durable-artifact class; ``None`` for the
+            # interruption class, which has no anomaly text and must not be
+            # given a fabricated one.
+            "anomaly": diagnosis.anomaly, "from_status": run.status.value,
+            # O10B: additive, and always present from this slice on, so a
+            # reader never has to infer the class from the anomaly text.
+            "recovery_class": recovery_class, "proven": diagnosis.proven,
+            "work_item_id": run.work_item_id, "phase": run.phase,
+            "interrupted_hop_id": diagnosis.interrupted_hop_id,
+            "hop_used_at_resume": run.hop_used, "hop_limit_at_resume": run.hop_limit,
         })
         write_run_snapshot(run_path, resumed)
         atomic_write_json(Path(checkout_state_root_value) / "checkpoint.json", checkpoint_projection(resumed, profile))
-        journal.append("mechanical_recovery_resumed", {"run_id": resumed.run_id, "to_status": resumed.status.value})
+        journal.append("mechanical_recovery_resumed", {
+            "run_id": resumed.run_id, "to_status": resumed.status.value,
+            "recovery_class": recovery_class,
+        })
+        # O10B, in exactly this order: the resumed Run snapshot and its
+        # checkpoint are durably persisted *before* the already-reconciled
+        # predecessor marker is retired, and the marker is retired before any
+        # later dispatch is permitted -- the ordering
+        # ``FTR-WFC-ATOMIC-HOP-RECOVERY`` makes mandatory. Without the
+        # retirement the continuation re-enters
+        # ``slice4.run_real_one_hop``'s stale-marker branch, re-reconciles
+        # the identical already-charged uncertain Hop and the Run can never
+        # progress. Retiring it enables no replay (the Hop id is in
+        # ``run.hops``, so the next dispatch takes the following sequence
+        # with a fresh invocation identity) and loses no information (the
+        # predicate proved no staged qualification attempt refers to it).
+        if marker_to_retire is not None:
+            marker_to_retire[0].unlink()
+            journal.append("mechanical_recovery_marker_retired", {
+                "run_id": run.run_id, "recovery_class": recovery_class,
+                "interrupted_hop_id": diagnosis.interrupted_hop_id,
+            })
 
         _, process = _do_continuation_launch(
             repository, checkout_dir, journal, lock, authorized, prelaunch, current_head=facts.head,
@@ -1083,8 +1310,14 @@ def _attempt_mechanical_recovery(
         # drive it -- unresumable. Roll the Run and checkpoint back to their
         # pre-recovery state and record the rollback; the journal stays
         # append-only, nothing already written is rewritten or deleted.
+        # O10B: a retired marker is restored from its own identical bytes
+        # too, so a rolled-back attempt leaves the Run and the marker exactly
+        # as it found them (the checkpoint is re-projected from the restored
+        # Run, as on the pre-existing path).
         write_run_snapshot(run_path, run)
         atomic_write_json(Path(checkout_state_root_value) / "checkpoint.json", checkpoint_projection(run, profile))
+        if marker_to_retire is not None:
+            write_dispatch_marker(*marker_to_retire)
         journal.append("mechanical_recovery_rolled_back", {"run_id": run.run_id, "error": str(error)})
         release_lock(lock)
         raise
@@ -1101,15 +1334,164 @@ def _attempt_mechanical_recovery(
     run_root = engine_state_root / "checkouts" / association["checkout_id"]
     result = LifecycleResult(
         classification=continuation_classification,
-        message=f"mechanically recovered; classified: {continuation_classification}",
+        message=(
+            f"mechanically recovered ({recovery_class}); "
+            f"classified: {continuation_classification}"
+        ),
         run_id=continued_run.run_id, run_status=continued_run.status.value, end_head=continued_run.current_head,
         state_root=str(engine_state_root), checkout_state_root=str(run_root),
+        budget_extensions=_journaled_budget_extensions(journal),
+        recovery_events=_journaled_recovery_events(journal),
     )
     journal.append("classified", {
         "classification": result.classification, "run_id": result.run_id, "run_status": result.run_status,
         "end_head": result.end_head, "state_root": result.state_root, "checkout_state_root": result.checkout_state_root,
     })
     return result
+
+
+# --------------------------------------------------------------------------
+# O10B: ``wfc resume --preview`` -- the recovery decision, before it is acted
+# on. Strictly read-only: no ownership lock, no Run, checkpoint or marker
+# write, no journal record, no engine launch. It therefore never appears in
+# an audit or a report, which is why its classification is not an
+# ``EXIT_CODES`` entry.
+# --------------------------------------------------------------------------
+
+_RECOVERY_PREVIEW_WOULD_DO = (
+    "retire the already-reconciled predecessor dispatch marker, move this identical "
+    "Run back to `ready` at its unchanged phase, charge no further Hop for the "
+    "recovery itself, and continue the engine's own Hop loop at the next Hop"
+)
+_RECOVERY_PREVIEW_HEADING = "RECOVERY PREVIEW (nothing was changed)"
+
+
+def _recovery_preview_live_facts(repository: Path, run: Run) -> list[str]:
+    """The two cheap live Git facts, observed read-only, so a preview that
+    says "would proceed" is not contradicted by the first refusal the real
+    resume would hit. Every remaining live element (Commission and
+    implementation identity, engine availability, the checkout lock) is
+    named as still unchecked rather than guessed at."""
+
+    try:
+        facts = observe_repository(repository)
+    except (GitPreflightError, OSError) as error:
+        return [f"  live facts        could not be observed: {error}"]
+    clean = facts.clean and not facts.unresolved_submodules
+    return [
+        f"  live head         {facts.head}"
+        + ("  (matches)" if facts.head == run.current_head else "  (DIFFERS from the Run's end HEAD)"),
+        f"  live worktree     {'clean' if clean else 'NOT clean with resolved submodules'}",
+    ]
+
+
+def _recovery_preview_block(
+    repository: Path, run: Run, diagnosis: _RecoveryDiagnosis, *, classification: str,
+) -> str:
+    """The one visible preview block, printed before any decision is acted on."""
+
+    open_blocking = tuple(
+        finding.finding_id for finding in run.findings
+        if finding.state is FindingState.OPEN and finding.blocking
+    )
+    lines = [
+        _RECOVERY_PREVIEW_HEADING,
+        f"  run id            {run.run_id}",
+        f"  work item         {run.work_item_id}",
+        f"  phase             {run.phase}",
+        f"  classification    {classification}",
+        f"  run status        {run.status.value} ({run.stop_reason})",
+        f"  reconcile reason  {run.reconcile_reason}",
+        f"  hops used         {run.hop_used} of {run.hop_limit} (charged; never refunded)",
+        f"  open findings     {', '.join(open_blocking) if open_blocking else 'none open and blocking'}",
+        f"  recovery class    {diagnosis.recovery_class or 'none -- not a recovery class'}",
+    ]
+    if diagnosis.refusal is not None:
+        lines.append(f"  would refuse      {diagnosis.refusal}")
+        lines.append(
+            "  would then do     nothing at all; the Run keeps its stop and every charged Hop"
+        )
+    elif diagnosis.proven is not None:
+        lines.append(f"  proven            {diagnosis.proven}")
+        lines.extend(_recovery_preview_live_facts(repository, run))
+        lines.append(f"  would then do     {_RECOVERY_PREVIEW_WOULD_DO}")
+        lines.append(
+            "  not yet checked   the Commission and implementation identity, the engine's "
+            "availability and the checkout's ownership lock, each of which can still "
+            "refuse by name"
+        )
+    else:
+        lines.append(
+            "  would then do     nothing recovery-related; `wfc resume` reports this "
+            "checkout's already recorded classification unchanged"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _preview_recovery(
+    repository: Path, checkout_dir: Path, journal: Journal, out,
+) -> LifecycleResult:
+    """Report what ``wfc resume`` would decide for this checkout, changing nothing."""
+
+    journaled = {
+        "budget_extensions": _journaled_budget_extensions(journal),
+        "recovery_events": _journaled_recovery_events(journal),
+    }
+    classified = journal.latest(("classified",))
+    if classified is None:
+        evaluated = _evaluate(repository, checkout_dir, journal)
+        out.write(
+            f"{_RECOVERY_PREVIEW_HEADING}\n"
+            f"  classification    {evaluated.classification}\n"
+            "  recovery class    none -- no classified Run to recover\n"
+            "  would then do     advance this already-authorized lifecycle from its "
+            "journal and filesystem facts, which is `wfc resume`'s ordinary behaviour "
+            "and not a recovery\n"
+        )
+        return LifecycleResult(
+            classification=RECOVERY_PREVIEW_CLASSIFICATION,
+            message="preview only; no recovery decision is pending for this checkout",
+            **journaled,
+        )
+
+    classification = str(classified.data.get("classification"))
+    candidate = _recovery_candidate_run(classified)
+    if candidate is None:
+        out.write(
+            f"{_RECOVERY_PREVIEW_HEADING}\n"
+            f"  classification    {classification}\n"
+            "  recovery class    none -- this classification admits no same-Run recovery\n"
+            "  would then do     nothing recovery-related; `wfc resume` reports this "
+            "checkout's already recorded classification unchanged\n"
+        )
+        return LifecycleResult(
+            classification=RECOVERY_PREVIEW_CLASSIFICATION,
+            message="preview only; this classification admits no same-Run recovery",
+            run_id=classified.data.get("run_id"),
+            run_status=classified.data.get("run_status"),
+            end_head=classified.data.get("end_head"),
+            checkout_state_root=classified.data.get("checkout_state_root"),
+            **journaled,
+        )
+
+    _, run = candidate
+    diagnosis = _diagnose_recovery(run)
+    out.write(_recovery_preview_block(repository, run, diagnosis, classification=classification))
+    if diagnosis.refusal is not None:
+        message = f"preview only; recovery would refuse: {diagnosis.refusal}"
+    elif diagnosis.proven is not None:
+        message = (
+            f"preview only; recovery would proceed for class {diagnosis.recovery_class} "
+            "once every live fact still holds"
+        )
+    else:
+        message = "preview only; this Run matches no same-Run recovery class"
+    return LifecycleResult(
+        classification=RECOVERY_PREVIEW_CLASSIFICATION, message=message,
+        run_id=run.run_id, run_status=run.status.value, end_head=run.current_head,
+        checkout_state_root=classified.data.get("checkout_state_root"),
+        **journaled,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1574,8 +1956,16 @@ def run_lifecycle(inputs: RunInputs) -> LifecycleResult:
     return _apply_postrun(result, postrun_status)
 
 
-def resume_lifecycle(repository: Path) -> LifecycleResult:
+def resume_lifecycle(repository: Path, *, preview: bool = False, out=None) -> LifecycleResult:
     checkout, checkout_dir, journal = _prepare_checkout(repository)
+    if preview:
+        # O10B: strictly read-only, and returns before `_advance` can take the
+        # ownership lock or any other step can perform an effect. ``out`` is
+        # resolved at call time, never bound as a default, so a caller (or a
+        # test) that redirects ``sys.stdout`` sees the preview block.
+        return _preview_recovery(
+            repository, checkout_dir, journal, sys.stdout if out is None else out,
+        )
     classified = journal.latest(("classified",))
     if classified is not None:
         # B, WI-WFC-RECOVERY-ROUTING-001: attempt mechanical recovery before
@@ -1711,6 +2101,29 @@ def _print_result(result: LifecycleResult) -> None:
     if result.checkout_state_root:
         print(f"CHECKOUT STATE ROOT: {result.checkout_state_root}")
     _print_budget_extensions(result)
+    _print_recovery_events(result)
+
+
+def _print_recovery_events(result: LifecycleResult) -> None:
+    """O10B: report-only; one block per same-Run recovery actually performed.
+
+    Printed by every surface that prints a ``LifecycleResult``, so a
+    recovery of this checkout's Run is never invisible on the command an
+    operator actually runs.
+    """
+
+    for index, event in enumerate(result.recovery_events, start=1):
+        print(f"RECOVERY {index}:")
+        print(f"  class: {event.get('recovery_class')}")
+        print(f"  run id: {event.get('run_id')}  phase: {event.get('phase')}")
+        if event.get("interrupted_hop_id"):
+            print(f"  interrupted hop: {event.get('interrupted_hop_id')} (charged; never replayed)")
+        print(
+            f"  resumed from: {event.get('from_status')} at "
+            f"{event.get('hop_used_at_resume')} of {event.get('hop_limit_at_resume')} hops "
+            "(charged; never refunded)"
+        )
+        print(f"  proven: {_stdout_safe(str(event.get('proven')))}")
 
 
 def _print_budget_extensions(result: LifecycleResult) -> None:
@@ -1810,17 +2223,53 @@ def cmd_run(argv: list[str]) -> int:
     return result.exit_code
 
 
+def _parse_resume_args(argv: list[str]) -> argparse.Namespace:
+    """O10B: ``wfc resume`` gains exactly one flag, ``--preview``.
+
+    Deliberately not a separate ``wfc preview-recovery`` subcommand: a
+    preview of a command belongs to that command, as O8 already decided for
+    ``wfc extend-budget --preview``; and deliberately not the default, which
+    would silently change ``wfc resume``'s behaviour for every other
+    classification.
+    """
+
+    parser = argparse.ArgumentParser(
+        prog="wfc resume",
+        description=(
+            "Continue an already-authorized checkout from its journal and filesystem "
+            "facts. For a Run whose own recorded facts satisfy one of the two same-Run "
+            "recovery predicates -- a recoverable durable-artifact anomaly, or a "
+            "proven-quiescent post-dispatch interruption -- it recovers that identical "
+            "Run: the stopped Hop stays charged, the interrupted invocation is never "
+            "replayed, and every other stop keeps refusing by name."
+        ),
+    )
+    parser.add_argument("--repository", default=".")
+    parser.add_argument(
+        "--preview", action="store_true",
+        help=(
+            "print the recovery decision -- the class, what was proven or which element "
+            "would refuse, and what resume would then do -- and change nothing at all"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
 def cmd_resume(argv: list[str]) -> int:
-    args = _parse_simple_args("wfc resume", argv)
+    args = _parse_resume_args(argv)
     try:
         repository = repository_identity(Path(args.repository))
-        result = resume_lifecycle(repository)
+        result = resume_lifecycle(repository, preview=args.preview)
     except (LifecycleError, CommissionError, GitPreflightError, JournalError, OSError) as error:
         classification = getattr(error, "classification", "refused_prelaunch")
         print(f"wfc resume: {error}", file=sys.stderr)
         return EXIT_CODES.get(classification, 2)
     _print_result(result)
     _print_postrun_notice(result)
+    if result.classification == RECOVERY_PREVIEW_CLASSIFICATION:
+        # A preview reports successfully that it changed nothing; it is not
+        # a Run outcome and therefore carries no EXIT_CODES value.
+        return 0
     return result.exit_code
 
 

@@ -3,7 +3,7 @@
 Type:: future technical record
 Status:: proposed / backlog / architecture-convergence draft
 Current controlling source:: This record; see link:_open.adoc[the active-work manifest] for its current card.
-Next action:: Develop a small recovery MVP only under a separately authorized Commission.
+Next action:: None open. R1.5's two production classes are complete (see <<design,the Design section>>); every further class is evidence-gated by a trigger named there.
 Not authorized here:: Automatic recovery implementation or a Run.
 Priority:: small recovery MVP; later work is evidence-gated
 Date:: 2026-09-24
@@ -14,6 +14,454 @@ optimization, not the next inevitable implementation.
 == Maintainer decision (2026-11-26)
 
 The general reconcile-and-resume of the same Run is to be evaluated and planned as slice link:beta2_operator_efficiency_plan.adoc#o10[O10] of the Beta-2 plan, whose first Hop states the design, keeping the conservative charging rules and the explicit human action; the slice may end with a recorded design result if no safe minimum exists. The `Priority` and `Not authorized here` lines above describe the state before this decision.
+
+That evaluation is <<design,the Design section below>> (2026-11-27, slice O10B).
+It decided *one* further class in and five classes out, by name, each with the
+trigger that would change the decision.
+
+[[design]]
+== Design (2026-11-27, slice O10B, `WI-WFC-BETA2-O10B-001`)
+
+Written before the code, under the maintainer's decision above and the Beta
+rule, for the questions link:beta2_operator_efficiency_plan.adoc#o10[the
+slice] asks. The slice's first deliverable is this per-class evaluation; the
+code implements exactly the one class the evaluation admits.
+
+*Preserved unchanged by every decision below*, as properties rather than as
+realisations: every Hop appended to `run.hops` is charged against
+`max_autonomous_hops`, and no used Hop is ever reset or refunded
+(`WFC-AUTO-05`); an invocation whose acceptance cannot be disproved is a
+charged uncertain Hop requiring reconciliation (`WFC-AUTO-02`); there is no
+hidden retry and no replay of an interrupted invocation (`WFC-AUTO-03`);
+recovery is an explicit human action; the independent reviewer's sole
+authority to open and resolve a Finding; the trusted-commit boundary and its
+scope check; one Run per canonical checkout (AD-5); and fail-closed behaviour
+for every class this evaluation does not admit -- each keeps refusing, or
+no-opping, exactly as before.
+
+=== The evidence this evaluation rests on, and what it could not measure
+
+Three sources. (1) The recorded friction of the Level-1 session:
+link:../warm_storage/post-beta-planning/wfc_level1_operator_friction_log.adoc[entries
+14, 15, 16, 19, 20]. (2) This repository's own source at the Commission
+baseline `e6b250f`, read directly; every mechanical claim below cites it. (3)
+This record's own pre-existing analysis (`Charging and reduction rules`,
+`Future R2 eligibility`, `Three recovery mechanisms`).
+
+*Not available:* the Evidence archive `../workflow-coordinator-run-evidence`
+is outside the implementing Hop's readable sandbox, so no new per-Run
+frequency figure was measured in this slice. The frequency statements below
+are the friction log's own recorded counts. This limits the *measured
+frequency*, not the mechanical facts.
+
+=== The six stop classes the operator actually met
+
+[cols="1,2,2,2,1",options="header"]
+|===
+|Class |What the operator met |What happens today |What a same-Run resume saves |Decision
+
+|[[o10b-class-1]]*1. Proven-quiescent post-dispatch interruption*
+|A provider timeout, crash or malformed/absent result after the dispatch
+marker exists, with the worktree left exactly as the invocation found it: no
+commit, no HEAD movement, no recorded repository anomaly, no published staged
+qualification attempt. Friction entry 14 is this shape as recorded (the first
+Hop exited 2: "No candidate, no damage"); entry 16's timed-out Hop is the same
+mechanism with a dirty tree, which is class 2.
+|One charged `uncertain_dispatch` Hop and `reconcile_required`
+(`slice4.py:411-419` -> `persistence.recover_uncertain_dispatch`), after
+which `wfc resume` *silently* falls through to "lifecycle already classified
+(no-op)": its predicate requires a `mechanical_preemption:` stop reason
+(`reducer.py:530`), which this class never has. The checkout's single
+lifecycle is spent, so the operator needs a fresh checkout *path* (entry 12)
+and a successor Commission.
+|The successor Commission and the checkout rotation: authoring, preview, a
+fresh worktree and venv, a six-minute baseline probe, and -- where the Run
+had already converged -- its Run-local Findings, phase and pinned governing
+truth, which a successor does not inherit. One to two operator hours plus
+three agent Hops per occurrence (entries 4, 13, 19, 21).
+|*Ship.*
+
+|*2. Interruption with an uncommitted candidate*
+|Entry 16: one Worker Hop implementing a five-step slice exceeded 3600 s
+(`Claude CLI timed out`, exit 143); the Run ended `reconcile_required` with a
+large uncommitted candidate in the worktree.
+|The Coordinator's own post-interruption observation records the dirty tree
+on the Run as an anomaly (`slice4.py:357-365` -> `git_facts.py:689-694`), and
+`resume_after_reconcile` refuses on any anomaly (`reducer.py:2310`). The
+operator salvages to a branch and commissions a successor.
+|Nothing that is safe; see <<o10b-class-2-why,the reasons below>>.
+|*Do not ship.*
+
+|*3. Mechanical commit-identity stop*
+|Entry 16's other attempt: the Worker had staged files with `git add` and
+written a CommitIntent subject without WorkItem/Hop identity; the Run stopped
+mechanically and `wfc resume` answered `refused_not_recoverable`.
+|Refused by name: a WFC-GIT-08 subject anomaly is deliberately outside
+`RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES` (`reducer.py:76-82`).
+|One Hop, at the price of treating an un-reviewed authorship defect as a
+transient interruption.
+|*Do not ship* (unchanged refusal).
+
+|*4. `awaiting_human` operational stop*
+|Entry 15: the Worker sandbox cannot run `bwrap`, so the Run stopped
+`awaiting_human` with an operational question; `wfc resume` answered
+`refused_not_recoverable`.
+|Refused by name, *correctly*. The productized answer channel already exists:
+`prepare-successor --authority-decision` (`operator.py:325-332`), for which
+an `operational` escalation does freeze the required semantic stop.
+|Nothing. A resume cannot answer a question.
+|*Do not ship* (a channel already exists).
+
+|*5. `awaiting_human_budget`*
+|Entry 19: the budget ran out one Broad Review before acceptance.
+|`wfc extend-budget` continues the same Run in place on recorded maintainer
+authority (slice link:beta2_operator_efficiency_plan.adoc#o8[O8]).
+|Already shipped, by the command that carries the human decision.
+|*Already shipped elsewhere.*
+
+|[[o10b-class-6]]*6. Recovery-eligible stop on the Run's last authorized Hop*
+|Not recorded in any friction entry; found by reading the code.
+|`wfc resume` refuses (`no autonomous Hop budget remains for a continuation`)
+and `wfc extend-budget` refuses (its state predicate requires
+`awaiting_human_budget`, `reducer.py:2417-2426`). Both refusals are honest and
+mutate nothing; the only exit is a successor Commission.
+|One successor Commission, in a case with *zero* recorded occurrences.
+|*Do not ship now*; trigger recorded.
+|===
+
+=== What class 1 proves mechanically, and why that is enough
+
+The Coordinator derives this class from its own two records -- the dispatch
+marker it wrote before dispatching, and the Hop it charged afterwards -- never
+from an agent's claim: the uncertain Hop is *synthesized by the Coordinator*
+(`persistence.recover_uncertain_dispatch`, `attribution="coordinator"`), and
+every live fact is re-observed at the boundary.
+
+The class is identified by a pure, total predicate over the persisted Run,
+`reducer.diagnose_quiescent_interruption_recovery_eligibility`, in the same
+shape as the existing `diagnose_mechanical_recovery_eligibility`: it returns
+the proven interrupted Hop id, a named refusal, or "never in this class at
+all" -- the scope gate that makes every other stop fall through to its
+unchanged behaviour. Its conjuncts, each with the fact it proves:
+
+[cols="2,3",options="header"]
+|===
+|Conjunct |What it proves
+
+|`status` is `reconcile_required` and `reconcile_reason` is `interruption`
+|This Run reached reconciliation through the *one* production call site of
+that reason (`persistence.py:150` ff., reached only from `slice4.py`'s
+post-marker paths) -- an interruption after a dispatch marker, never a
+semantic stop, a mechanical preemption or a prerequisite return.
+
+|`stop_reason` is exactly `reconcile_requires_explicit_resume`, and
+`human_question` is exactly the boilerplate `require_reconcile` writes
+|No question of the Run's own is open. `record_hop` clears `human_question`
+(`model.py:1166-1167`) before `require_reconcile` writes that boilerplate,
+and an idempotent re-entry preserves it, so any other value means some other
+path left a question open. The boilerplate question is the one `wfc resume`
+answers by being run.
+
+|`semantic_stop` is absent
+|No frozen semantic stop is being stepped over. Such a stop needs the human's
+*answer*, which is class 4's channel, not a resume.
+
+|`anomalies` is empty
+|The Coordinator's own post-interruption observation found no dirty tracked
+state, no non-ignored untracked state, no unresolved submodule, no
+out-of-scope changed path, no forbidden merge and no rewritten ancestry
+(`git_facts.py:665-703`). This is the conjunct that excludes class 2 by
+construction.
+
+|the last Hop is the interrupted one: `role` `uncertain_dispatch`, `outcome`
+`uncertain`, `stop_reason` `interrupted_after_dispatch_marker`,
+`attribution` `coordinator`, `applied_route` absent, `finding_delta_ids` and
+`evidence_refs` empty
+|The Hop is the Coordinator's own charged uncertain Hop. It reached no route,
+applied no Finding delta and claimed no evidence: it has, and had, no
+reduction authority. The texts are shared constants, imported by the boundary
+that writes them, so the two sides cannot drift.
+
+|`actual_commits` empty and `base_head == end_head`, and `end_head` and
+`reconcile_anchor` both equal the Run's `current_head`
+|The interrupted invocation produced *no commit at all*, HEAD did not move
+while it ran, and HEAD has not moved since the charge. This is the conjunct
+that excludes silent acceptance of an unreviewed candidate: nothing bypassed
+the trusted-commit boundary, because nothing entered history.
+
+|`pre_route_anchor_sha256` absent on the Hop, and on any marker still present
+|No staged qualification attempt was published for the interrupted
+invocation. Nothing therefore depends on the predecessor marker's exact
+correlation (`persistence.py:317-328`), so retiring that marker is
+information-preserving, and no evidence command of that invocation ran.
+|===
+
+The *live* facts are then re-verified at the boundary, reusing the existing
+mechanical-recovery re-verification unchanged and in the same pre-mutation
+order: current HEAD equals the Run's recorded end HEAD; the worktree is clean
+with resolved submodules; at least one autonomous Hop remains against the
+Run's own `hop_limit`; the Commission and execution-envelope identity are
+unchanged since authorization; the package implementation identity is
+unchanged; any dispatch marker still present correlates exactly with the
+charged uncertain Hop (a marker that does not is *refused*, never silently
+retired); the reconcile/resume reduction re-verifies purely; the continuation
+engine resolves and is executable; and the checkout's ownership lock is
+acquired -- which is also how the predecessor controller is established not to
+be live. Every failure refuses by name (`refused_not_recoverable`) and mutates
+nothing.
+
+*Why this is enough, as an argument rather than a list.* Because the Hop stays
+charged and the invocation is never replayed, a resume of this class puts the
+next invocation at *exactly* the boundary the Coordinator's own inter-Hop
+boundary would have put it at had the interrupted invocation returned an empty
+failed result: same commit, clean tree, same phase, same pinned governing
+truth, same Findings, one more Hop charged. No new trust is extended to
+anything, and no result of the interrupted invocation is read. The residual
+risk this record's section B names -- side effects outside Git, ignored paths,
+escaped descendants, network and credential effects -- is therefore
+*unchanged* by this class rather than newly incurred: it is the pre-existing
+trust-boundary gap of every ordinary Hop. That is precisely what separates
+this class from R2 (same-Hop retry), which *discards* a Hop and must
+therefore prove quiescence as a safety precondition. Here quiescence is proven
+only to decide that nothing useful is being thrown away and nothing unreviewed
+is being adopted; the charge is paid either way.
+
+=== What this class deliberately does *not* require: an open blocking Finding
+
+An open blocking Finding is *not* a refusal for this class, unlike the
+durable-artifact predicate, whose own conjunct is unchanged. The reasons: this
+record's own `Case A` (`H001` review creates `F001`, the `H002` correction is
+interrupted) names exactly that shape as the valid same-Run resume, and it is
+the shape in which preserving Run-local Findings -- the whole value of a
+same-Run resume over a successor Run -- actually matters. Resume changes no
+Finding state, reads no Finding for any decision, and leaves disposition
+entirely with the independent reviewer; the resumed phase receives precisely
+the state it would have received had the interrupted invocation returned an
+empty failed result. The durable-artifact class keeps its stricter conjunct
+because there an open Finding may be the real controlling fact for
+*reclassifying* a stop, which is a different question from continuing an
+already-honest interruption.
+
+=== The one new effect, and its mandatory ordering
+
+One effect is genuinely new: the already-reconciled predecessor dispatch
+marker must be *retired*. Without that, the continuation re-enters
+`slice4.run_real_one_hop`'s stale-marker branch (`slice4.py:201-238`),
+re-reconciles the identical already-charged uncertain Hop and the Run can
+never progress -- the pinned test
+`test_a_resumed_run_bounces_back_while_the_marker_is_not_retired` makes that
+mechanism explicit.
+
+The ordering this record already requires is honoured: the resumed Run
+snapshot and its checkpoint are persisted *before* the marker is retired, and
+the marker is retired before any later dispatch is permitted. Retiring it
+enables no replay -- the interrupted Hop's id is in `run.hops`, so the next
+dispatch takes the following sequence with a fresh `invocation_id` -- and
+loses no information, because the anchor conjunct proves nothing refers to it.
+A continuation-launch failure after that point rolls the Run, the checkpoint
+*and* the marker back to their exact pre-recovery bytes and records the
+rollback; the journal stays append-only.
+
+=== What resume would do, before it does it
+
+*Decision.* `wfc resume --preview` prints the recovery decision and changes
+nothing at all: no ownership lock, no Run, checkpoint or marker write, no
+journal record, no launch. It names the recovery class or the named refusal,
+the Run, phase, reconcile reason, Hops used against the ceiling, any open
+blocking Finding, everything that was proven, the two cheap live Git facts
+(current HEAD and worktree state, observed read-only), what the resume would
+then do, and which live elements it has *not* yet checked. *Rejected:* a
+separate `wfc preview-recovery` subcommand -- a preview of a command belongs
+to that command, as O8 decided for `wfc extend-budget --preview`; and making
+the preview the default, which would silently change `wfc resume`'s behaviour
+for every other classification. The preview covers the pre-existing
+durable-artifact class too, which is a strict improvement to it and no change
+of its behaviour.
+
+=== Composition with a recorded budget extension (O8)
+
+A resumed Run is subject to the unchanged budget rules, in both directions. If
+no autonomous Hop remains, the resume refuses by name *before* any mutation,
+so an interruption that spent the last Hop never has its honest stop erased.
+If a recorded extension already raised `hop_limit`, the resume reads that
+raised ceiling, because it reads the Run's own `hop_limit`. If the
+continuation then spends the last Hop, the reducer stops the Run
+`awaiting_human_budget` exactly as for any other Hop (`reducer.py:2123`),
+and `wfc extend-budget` is the channel for it. An extension never resets a
+charged Hop, and the Hop charged by the interruption counts against the
+grant's own `hop_used_at_grant` like any other. Nothing about
+`wfc extend-budget` changes in this slice; the one shape neither command
+covers is <<o10b-class-6,class 6>>.
+
+[[o10b-class-2-why]]
+=== Per-class reasons, and the trigger that would change each decision
+
+*Class 2 (uncommitted candidate) -- do not ship, and not merely "not now".*
+Three independent reasons, none of them "it changes a contract". (a) There is
+no sound disposition of the candidate. Adopting it would accept an unreviewed
+mutation produced by an invocation whose acceptance cannot be disproved, with
+no result, no CommitIntent and no scope claim to check it against -- the
+trusted-commit boundary would have nothing to validate. Discarding it would
+require an automatic repository reset or clean, which this record lists as a
+non-goal and which would destroy the operator's own salvage material. Leaving
+it in place is refused three times over: by the recorded anomaly, by
+`resume_after_reconcile` (`reducer.py:2310`), and again by the next Hop's own
+`preflight_hop` (`git_facts.py:588-592`). (b) The decision that remains -- is
+this candidate worth salvaging, forensic preservation only, or discard -- is
+the maintainer judgement the recovery chapter's four outcomes already own;
+mechanising it would move judgement, not mechanics. (c) The operator's present
+path is already the correct one and is expensive for the right reason: the
+salvage branch plus a successor Commission is what makes the candidate
+reviewable at all.
+*A narrower form was considered and rejected:* admitting a Run whose only
+recorded anomalies are worktree-state ones (dirty tracked, untracked,
+unresolved submodule) *after* a human has restored the tree, since the live
+clean-worktree observation at the recorded HEAD proves, through Git alone,
+that the tree again equals the committed baseline and that nothing unreviewed
+can be adopted. It is rejected for this slice because it requires weakening
+`resume_after_reconcile`'s "anomalies must be resolved before resume" rule in
+the deterministic core and delegating that proof to the boundary -- a change
+to a shared pure-core invariant that other analysis leans on, for a case whose
+only recorded occurrence (entry 16) the operator already resolved correctly by
+salvage. *Trigger:* a recorded occurrence where the operator salvaged an
+interrupted candidate, restored a provably clean tree at the unchanged HEAD,
+and the resume was then refused *only* by the historical anomaly record. The
+shape to ship then is the one named here, with the proof kept in the core
+rather than in the caller.
+
+*Class 3 (commit-identity stop) -- do not ship.* A malformed CommitIntent
+subject or a staged index is an authorship defect of a specific invocation,
+not a transient interruption; this record's charging rules say so in as many
+words. The cheap remedy exists and is preventive: the commit mechanics are in
+the authoring checklist of
+link:FTR-WFC-LEVEL1-OPERATOR-GUIDANCE.adoc[the operator-guidance record].
+*Trigger:* none proposed -- making such a defect reviewable is a correction
+Hop, that is the ordinary `robust@v1` loop, not recovery.
+
+*Class 4 (operational `awaiting_human`) -- do not ship.* Resume is the wrong
+instrument for a question; the right one is shipped and, since slice O1, also
+documented. *Trigger:* recorded evidence that
+`prepare-successor --authority-decision` is itself too expensive for an
+operational question, which is
+link:FTR-WFC-STOPPED-RUN-CONTINUATION-ECONOMY.adoc[the continuation-economy
+record]'s territory, not this one's.
+
+*Class 6 (recovery-eligible stop with no Hop left) -- do not ship now.*
+Shipping it means admitting a second Run state into `wfc extend-budget`'s own
+state predicate (`reducer.py:2417-2421`) and into the persistence invariant
+that pins `run_status_at_grant` to `awaiting_human_budget`
+(`serialization.py:1646`), and giving `extend_hop_budget` a second mode that
+raises the ceiling *without* returning the Run to `ready` -- because for this
+class the honest stop must survive for the subsequent `wfc resume` to recover
+it. That is a real widening of the budget-extension authority surface for a
+case with zero recorded occurrences, and disproportionate. Both refusals stay
+honest and name their reason. *Trigger:* the first recorded occurrence. The
+shape to ship then is the one named here.
+
+*R2 (bounded same-Hop retry) -- unchanged and still not opened.* This slice
+measures nothing that opens it: it records no transient Attempt that was
+discarded, and it deliberately does not create the one thing R2 needs, a Hop
+that is *not* charged. The remaining evidence questions at the end of this
+record are untouched.
+
+=== Benefit, stated in the two halves it actually has
+
+Honesty about the shipped class requires separating them.
+
+. *A named diagnosis for every interruption* -- benefits both recorded
+  occurrences (entries 14 and 16). Today `wfc resume` answers an interrupted
+  Run with "lifecycle already classified (no-op)", which tells the operator
+  nothing about why. After this slice every post-dispatch interruption gets
+  either a recovery or a *named* refusal, and `wfc resume --preview` gives
+  that answer without changing anything; `wfc report`'s next-action line names
+  the path that exists instead of asserting a conflicting state the predicate
+  proves is absent.
+. *Same-Run recovery for the quiescent subset* -- saves the successor
+  Commission and the checkout rotation named in class 1, but its *frequency is
+  unmeasured*, exactly as this record's "Empirical basis" section already
+  says. Of the two recorded occurrences, entry 16 is class 2 (refused by
+  name), and entry 14's cause was a mismatched `--executable`, which O3O2 now
+  refuses before dispatch and which a resume would not fix anyway: resume does
+  not diagnose or change the *cause* of an interruption. Where the cause is
+  environmental and persists, the next Hop is charged and interrupted again --
+  bounded by the Hop budget and by the explicit human action, never
+  automatic. The subset this half genuinely serves is the transient one
+  (provider quota, a crashed provider process, a timeout on work that has
+  since shrunk), which is this record's own motivating case and remains
+  unmeasured.
+
+The slice is shipped on the first half plus the soundness of the second, not
+on a measured frequency. If the class never admits in practice, the named
+diagnosis still stands.
+
+=== Alternatives rejected for the shipped class
+
+*A general reconcile-and-resume framework* (a registry of recovery classes, a
+derived `permitted_recovery_actions` set, a policy layer choosing between
+them). Rejected: the slice asks for a small complete class rather than a
+framework, and with two classes a framework would carry more machinery than
+content. The two predicates are two named pure functions of the same shape,
+dispatched in one place (`frontdoor/lifecycle.py`'s `_diagnose_recovery`), so a
+third class is a third function and one more branch.
+
+*A new CLI subcommand* (`wfc recover`). Rejected: `wfc resume` is already the
+explicit human action for a stopped lifecycle and already carries the
+pre-existing recovery class; a second command would split one operator
+decision across two surfaces and need its own refusal vocabulary.
+
+*Clearing `reconcile_reason`/`reconcile_anchor` on resume.* Rejected: they are
+historical provenance of the recovered stop, exactly as the
+`mechanical_recoverable` anomaly text is deliberately kept, and the
+predicate's scope gate is the Run's *status*, so stale provenance can never
+re-admit a Run that no longer requires reconciliation.
+
+*Making the retired marker's absence a refusal.* Rejected: the predicate
+reasons about the charged Hop, and a marker that is already gone carries
+nothing the Hop does not; a *present* marker must correlate exactly, which is
+the check that matters.
+
+=== Honest limits of the shipped class
+
+. *Its frequency is unmeasured*, as stated above.
+. *The continuation's checkpoint is projected without execution evidence.*
+  `checkpoint_projection(resumed, profile)` is called with no
+  `execution_evidence_json`, as on the pre-existing durable-artifact path and
+  in `wfc extend-budget`. For a schema-3 Run with anchored Hops that
+  projection would refuse ("Run Hop anchor lacks paired execution evidence",
+  `persistence.py:375`). It is unreachable through the Front Door, which
+  renders every Consumer Request's profile at `schema_version: 2`
+  (`commissioning.py:358`) and therefore creates schema-2 Runs
+  (`model.py:1122`), whose Hop summaries do not even carry an anchor
+  (`serialization.py:1406-1427`) and whose qualification index is empty by
+  construction. Threading the evidence document into all three call sites is a
+  change to the two pre-existing continuation paths, not to this class, and is
+  left to whichever slice first needs a schema-3 Run to continue through the
+  Front Door.
+. *One narrow crash window remains, shared with both sibling classes.* A
+  controller killed between the `mechanical_recovery_resumed` record and the
+  continuation's own further `classified` record has no `uncertain_launch`-
+  equivalent re-entry of its own. This slice neither widens nor closes that
+  window; the recovery chapter already records it, and a maintainer who finds
+  a Run in that shape treats it as the salvage-plus-successor outcome.
+. *One docs-sync statement this slice could not correct.*
+  `docs/semantic_model/ch01_current_semantics/02_states.adoc` states, around
+  the `reconcile_required` row, that same-Run resume is a library capability
+  for the first two reconcile reasons, meaning `interruption` and
+  `prerequisite_return`. The first half is no longer true: the quiescent
+  subset of `interruption` is now exposed through `wfc resume`. The Semantic
+  Model is outside this slice's authorized scope, so the statement is
+  *reported* here rather than edited, as `docs/backlog/README.adoc` requires.
+  The correction needed is one clause: `prerequisite_return`, and an
+  `interruption` that does not satisfy the quiescence predicate, remain
+  library-only.
+
+=== Why a resume cannot loop
+
+Each resume is one explicit human action and charges nothing for itself; each
+further interruption charges one more Hop. The Hop budget therefore bounds the
+number of resumes of a Run without any new counter, and an exhausted budget
+refuses by name. There is no automatic resume, no watchdog and no retry
+allowance anywhere in this slice.
 
 
 == Pointer: R1.5's production entry now exists for one narrow class (2026-11-26)

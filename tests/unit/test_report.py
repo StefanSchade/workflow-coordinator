@@ -100,6 +100,32 @@ class TestStopStatusesNeverReportedAsSuccess:
         assert stop_reason in text
         assert "completed" not in text.split("\n")[2]  # the outcome line itself
 
+    def test_interruption_reconcile_names_the_resume_path_that_exists(self, tmp_path):
+        """O10B: a `reconcile_required` Run reconciled after a post-dispatch
+        interruption has a real recovery path, so the generic "reconcile the
+        Run's conflicting state" line is replaced by one naming
+        `wfc resume --preview`. The audit's own closed-enum
+        ``reconcile_reason`` is the only trigger."""
+
+        audit = _audit_for(
+            tmp_path, status="reconcile_required",
+            stop_reason="reconcile_requires_explicit_resume",
+        )
+        audit["run"]["reconcile_reason"] = "interruption"
+        report = rp.build_report(audit)
+        assert report["next_action"] != rp._NEXT_HUMAN_CHOICE["reconcile_required"]
+        assert "wfc resume --preview" in report["next_action"]
+        assert "already charged and is never replayed" in report["next_action"]
+
+    @pytest.mark.parametrize("reason", [None, "prerequisite_return", "mechanical_recoverable"])
+    def test_every_other_reconcile_reason_keeps_the_generic_fail_closed_line(self, tmp_path, reason):
+        audit = _audit_for(
+            tmp_path, status="reconcile_required", stop_reason="convergence_conflict",
+        )
+        audit["run"]["reconcile_reason"] = reason
+        report = rp.build_report(audit)
+        assert report["next_action"] == rp._NEXT_HUMAN_CHOICE["reconcile_required"]
+
     def test_awaiting_human_without_a_recorded_question_never_promises_one(self, tmp_path):
         """A mechanical (not semantic) awaiting_human stop names only a real path."""
 

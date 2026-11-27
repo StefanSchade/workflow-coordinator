@@ -81,6 +81,26 @@ RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES = frozenset({
     DURABLE_ARTIFACT_ANOMALY_NOT_REGULAR_TRACKED_FILE,
 })
 
+# O10B, WI-WFC-BETA2-O10B-001: the exact recorded shape of a post-dispatch
+# interruption. Named once here so the boundary that *writes* it
+# (``persistence.recover_uncertain_dispatch``) and the predicate that
+# *recognizes* it (``diagnose_quiescent_interruption_recovery_eligibility``
+# below) can never drift apart -- the same reason
+# ``RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES`` above is imported by
+# ``vertical.py`` rather than duplicated there. See
+# ``FTR-WFC-ATOMIC-HOP-RECOVERY``'s Design section for why each of these is
+# load-bearing rather than merely descriptive.
+INTERRUPTION_RECONCILE_REASON = "interruption"
+# Written for ``interruption`` *and* ``prerequisite_return`` (which is why
+# the text itself is neutral); it is the Hop-level interruption facts below,
+# never this text alone, that identify this class.
+EXPLICIT_RESUME_STOP_REASON = "reconcile_requires_explicit_resume"
+INTERRUPTION_RECONCILE_QUESTION = "Validate current reality and explicitly authorize resume."
+UNCERTAIN_DISPATCH_ROLE = "uncertain_dispatch"
+UNCERTAIN_DISPATCH_OUTCOME = "uncertain"
+UNCERTAIN_DISPATCH_HOP_STOP_REASON = "interrupted_after_dispatch_marker"
+UNCERTAIN_DISPATCH_ATTRIBUTION = "coordinator"
+
 
 def trusted_evaluator_qualification(
     index: TrustedQualificationIndex,
@@ -521,6 +541,112 @@ def diagnose_mechanical_recovery_eligibility(run: Run) -> tuple[str | None, str 
     if anomaly not in RECOVERABLE_DURABLE_ARTIFACT_ANOMALIES:
         return None, f"the stop reason is not the recoverable durable-artifact anomaly class: {anomaly}"
     return anomaly, None
+
+
+def diagnose_quiescent_interruption_recovery_eligibility(
+    run: Run,
+) -> tuple[str | None, str | None]:
+    """Decide O10B's quiescent-interruption eligibility and name what fails.
+
+    Returns ``(hop_id, None)`` when every conjunct holds -- ``hop_id`` is the
+    charged uncertain Hop that was proven quiescent, so a caller can name it
+    -- or ``(None, reason)`` once a named reason is known, or ``(None, None)``
+    for the scope gate: this Run never reached reconciliation through a
+    post-dispatch interruption at all, so its caller must fall back to its
+    own unrelated, pre-existing behaviour rather than naming a refusal for a
+    predicate that was never in play.
+
+    Deliberately the same shape, and the same split of concerns, as
+    ``diagnose_mechanical_recovery_eligibility`` above: pure and total over
+    the *persisted Run only*. Every live fact (current HEAD, clean worktree,
+    remaining Hop budget, Commission and implementation identity, the
+    correlated predecessor dispatch marker, predecessor liveness) is a
+    separate boundary concern layered on top of this result and never folded
+    into it.
+
+    What the conjuncts prove, and why that is enough, is argued in
+    ``docs/backlog/FTR-WFC-ATOMIC-HOP-RECOVERY.adoc``'s Design section. The
+    short form: because the interrupted Hop stays charged and the
+    interrupted invocation is never replayed, this predicate decides only
+    that nothing useful is being discarded and nothing unreviewed is being
+    adopted. It is *not* asked to prove the absence of side effects outside
+    Git, which no primitive here can prove and on which this class
+    therefore does not rely.
+
+    An open blocking Finding is deliberately *not* a refusal here (unlike
+    the durable-artifact predicate above, whose own conjunct is unchanged):
+    an interrupted correction Hop with an open Finding is exactly the case
+    this record's "Case A" names as the valid same-Run resume, resume
+    changes no Finding state, and Finding disposition stays entirely with
+    the independent reviewer. The resumed phase receives precisely the Run
+    state it would have received had the interrupted invocation returned an
+    empty failed result.
+    """
+
+    if (
+        run.status is not RunStatus.RECONCILE_REQUIRED
+        or run.reconcile_reason != INTERRUPTION_RECONCILE_REASON
+    ):
+        return None, None
+
+    # In scope from here on: every exit below names its own refusal.
+    if run.stop_reason != EXPLICIT_RESUME_STOP_REASON:
+        return None, (
+            "the Run's stop reason is not the interrupted-dispatch reconcile reason: "
+            f"{run.stop_reason}"
+        )
+    if run.human_question != INTERRUPTION_RECONCILE_QUESTION:
+        # ``record_hop`` clears ``human_question`` before ``require_reconcile``
+        # writes this exact boilerplate, and an idempotent re-entry preserves
+        # it, so anything else here is a question some other path left open.
+        return None, "the Run has an open human question of its own"
+    if run.semantic_stop is not None:
+        return None, "the Run has an open semantic stop"
+    if run.anomalies:
+        return None, (
+            "the interrupted invocation left recorded repository anomalies: "
+            + "; ".join(run.anomalies)
+        )
+    if not run.hops:
+        return None, "the Run has no recorded Hop outcome"
+
+    hop = run.hops[-1]
+    if hop.role != UNCERTAIN_DISPATCH_ROLE:
+        return None, (
+            "the Run's last Hop is not the Coordinator's charged uncertain Hop: "
+            f"{hop.hop_id} ({hop.role})"
+        )
+    if (
+        hop.outcome != UNCERTAIN_DISPATCH_OUTCOME
+        or hop.stop_reason != UNCERTAIN_DISPATCH_HOP_STOP_REASON
+        or hop.attribution != UNCERTAIN_DISPATCH_ATTRIBUTION
+    ):
+        return None, (
+            f"the charged uncertain Hop {hop.hop_id} does not carry the recorded "
+            "post-dispatch interruption shape"
+        )
+    if hop.applied_route is not None or hop.finding_delta_ids or hop.evidence_refs:
+        return None, (
+            f"the charged uncertain Hop {hop.hop_id} claims a route, a Finding delta "
+            "or evidence"
+        )
+    if hop.actual_commits or hop.base_head != hop.end_head:
+        return None, (
+            f"the interrupted invocation left a commit at Hop {hop.hop_id}: "
+            + (", ".join(hop.actual_commits) or f"{hop.base_head} -> {hop.end_head}")
+        )
+    if hop.end_head != run.current_head or run.reconcile_anchor != run.current_head:
+        return None, (
+            "HEAD moved after the interrupted invocation was charged: Hop "
+            f"{hop.hop_id} ended at {hop.end_head}, reconciled at "
+            f"{run.reconcile_anchor}, recorded end HEAD {run.current_head}"
+        )
+    if hop.pre_route_anchor_sha256 is not None:
+        return None, (
+            "the interrupted invocation published a staged qualification attempt at "
+            f"Hop {hop.hop_id}"
+        )
+    return hop.hop_id, None
 
 
 def recoverable_mechanical_stop_anomaly(run: Run) -> str | None:
@@ -2121,10 +2247,12 @@ def require_reconcile(
     way).
     """
 
-    if reason not in {"interruption", "prerequisite_return", "mechanical_recoverable"}:
+    if reason not in {
+        INTERRUPTION_RECONCILE_REASON, "prerequisite_return", "mechanical_recoverable",
+    }:
         raise ReductionError(f"unknown reconcile reason: {reason}")
     allowed_statuses = {
-        "interruption": {
+        INTERRUPTION_RECONCILE_REASON: {
             RunStatus.READY,
             RunStatus.RUNNING,
             RunStatus.AWAITING_SUPERVISOR,
@@ -2144,11 +2272,12 @@ def require_reconcile(
         anomalies = (*anomalies, reality_error)
     anchor = run.suspension_head if reason == "prerequisite_return" else run.current_head
     stop_reason = (
-        run.stop_reason if reason == "mechanical_recoverable" else "reconcile_requires_explicit_resume"
+        run.stop_reason if reason == "mechanical_recoverable"
+        else EXPLICIT_RESUME_STOP_REASON
     )
     human_question = (
         None if reason == "mechanical_recoverable"
-        else run.human_question or "Validate current reality and explicitly authorize resume."
+        else run.human_question or INTERRUPTION_RECONCILE_QUESTION
     )
     return replace(
         run,
